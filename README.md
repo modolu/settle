@@ -242,19 +242,27 @@ outside a Vercel deployment. `environment` is `production`, `preview`,
 
 ### `GET /.well-known/xagent-verification.json`
 
+The X-Agent MCP Hackathon deployment proof:
+
 ```sh
 curl -i https://<deployment>/.well-known/xagent-verification.json
 ```
 
 ```json
-{ "slug": "<XAGENT_SLUG>", "commit": "<exact 40-character git commit SHA>" }
+{
+  "schemaVersion": 1,
+  "slug": "modolu-settle",
+  "commit": "<exact 40-character git commit SHA>"
+}
 ```
 
-This is a **placeholder contract** carrying only the registered slug and the
-deployed commit. The official X-Agent schema is adopted in Milestone 6 by
-replacing `src/lib/xagent-verification.ts` and its test. If either value is
-unavailable the route returns `500` with the error envelope below rather than
-fabricated data.
+Exactly these three fields. `slug` is Settle's registered hackathon slug; the
+deployment variable `XAGENT_SLUG` must be set to `modolu-settle` and any other
+value is a configuration error. `commit` is the same validated
+`VERCEL_GIT_COMMIT_SHA` (40 lowercase hex characters) that `/health` reports —
+one source for both routes, no fallback. If the slug or commit is missing or
+malformed the route returns `500` with the error envelope below rather than
+fabricated evidence. The shape lives only in `src/lib/xagent-verification.ts`.
 
 ### Response conventions
 
@@ -295,4 +303,4 @@ One Vercel project, framework preset Next.js, Node.js 24 (selected from
 point at the production database); `VERCEL_ENV` and `VERCEL_GIT_COMMIT_SHA`
 are provided by the platform. For schema-changing commits run `pnpm db:migrate`
 against the target database before promoting the deployment. After each deploy verify `/health` reports the reviewed commit and
-`/.well-known/xagent-verification.json` returns `200`.
+`/.well-known/xagent-verification.json` returns `200` with the same commit.

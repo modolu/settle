@@ -1,61 +1,78 @@
 import { describe, expect, it } from "vitest";
 
 import { AppError } from "@/lib/errors";
-import { buildXagentVerification, xagentVerificationSchema } from "@/lib/xagent-verification";
-
-// PLACEHOLDER CONTRACT: replace these expectations with the official X-Agent
-// schema fixture in Milestone 6 (see src/lib/xagent-verification.ts).
+import {
+  XAGENT_SCHEMA_VERSION,
+  XAGENT_SLUG,
+  buildXagentVerification,
+  xagentVerificationSchema,
+} from "@/lib/xagent-verification";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
-describe("buildXagentVerification (placeholder contract)", () => {
-  it("returns exactly slug and commit when both are configured", () => {
-    const document = buildXagentVerification({ xagentSlug: "settle", commitSha: SHA });
-    expect(document).toEqual({ slug: "settle", commit: SHA });
-    expect(Object.keys(document)).toEqual(["slug", "commit"]);
+function captureAppError(fn: () => unknown): AppError {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(AppError);
+    return error as AppError;
+  }
+  return expect.unreachable("expected an AppError");
+}
+
+describe("buildXagentVerification (official schema)", () => {
+  it("fixes the registered slug and schema version", () => {
+    expect(XAGENT_SLUG).toBe("modolu-settle");
+    expect(XAGENT_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("returns exactly schemaVersion, slug and commit for a valid 40-character commit", () => {
+    const document = buildXagentVerification({ xagentSlug: "modolu-settle", commitSha: SHA });
+    expect(document).toEqual({ schemaVersion: 1, slug: "modolu-settle", commit: SHA });
+    expect(Object.keys(document)).toEqual(["schemaVersion", "slug", "commit"]);
     expect(xagentVerificationSchema.safeParse(document).success).toBe(true);
   });
 
-  it("refuses to fabricate a document when the slug is missing", () => {
-    expect(() => buildXagentVerification({ xagentSlug: null, commitSha: SHA })).toThrow(AppError);
-    try {
-      buildXagentVerification({ xagentSlug: null, commitSha: SHA });
-    } catch (error) {
-      const appError = error as AppError;
-      expect(appError.code).toBe("INTERNAL_ERROR");
-      expect(appError.httpStatus).toBe(500);
-      expect(appError.message).toContain("XAGENT_SLUG");
-      expect(appError.message).not.toContain("VERCEL_GIT_COMMIT_SHA");
+  it("fails when the slug is missing", () => {
+    const error = captureAppError(() => buildXagentVerification({ xagentSlug: null, commitSha: SHA }));
+    expect(error.code).toBe("INTERNAL_ERROR");
+    expect(error.httpStatus).toBe(500);
+    expect(error.message).toBe("X-Agent verification is not configured: missing XAGENT_SLUG");
+  });
+
+  it("fails when the configured slug is not the registered one", () => {
+    for (const slug of ["settle", "Modolu-Settle", "modolu-settle ", "modolu-settle-2"]) {
+      const error = captureAppError(() => buildXagentVerification({ xagentSlug: slug, commitSha: SHA }));
+      expect(error.code).toBe("INTERNAL_ERROR");
+      expect(error.message).toBe('X-Agent verification is misconfigured: XAGENT_SLUG must be "modolu-settle"');
     }
   });
 
-  it("refuses to fabricate a document when the commit is missing", () => {
-    try {
-      buildXagentVerification({ xagentSlug: "settle", commitSha: null });
-      expect.unreachable("expected an AppError");
-    } catch (error) {
-      const appError = error as AppError;
-      expect(appError.code).toBe("INTERNAL_ERROR");
-      expect(appError.message).toContain("VERCEL_GIT_COMMIT_SHA");
-    }
+  it("fails when the commit is missing", () => {
+    const error = captureAppError(() => buildXagentVerification({ xagentSlug: "modolu-settle", commitSha: null }));
+    expect(error.code).toBe("INTERNAL_ERROR");
+    expect(error.message).toBe("X-Agent verification is not configured: missing VERCEL_GIT_COMMIT_SHA");
   });
 
   it("lists both variables when neither is configured", () => {
-    try {
-      buildXagentVerification({ xagentSlug: null, commitSha: null });
-      expect.unreachable("expected an AppError");
-    } catch (error) {
-      expect((error as AppError).message).toBe(
-        "X-Agent verification is not configured: missing XAGENT_SLUG, VERCEL_GIT_COMMIT_SHA",
-      );
+    const error = captureAppError(() => buildXagentVerification({ xagentSlug: null, commitSha: null }));
+    expect(error.message).toBe("X-Agent verification is not configured: missing XAGENT_SLUG, VERCEL_GIT_COMMIT_SHA");
+  });
+
+  it("never emits a malformed commit (belt and braces behind config validation)", () => {
+    for (const commitSha of ["abc123", SHA.toUpperCase(), `${SHA}0`, SHA.slice(0, 39)]) {
+      expect(() => buildXagentVerification({ xagentSlug: "modolu-settle", commitSha })).toThrow();
     }
   });
 
-  it("schema rejects extra or malformed fields", () => {
-    expect(xagentVerificationSchema.safeParse({ slug: "settle", commit: SHA, extra: 1 }).success).toBe(
-      false,
-    );
-    expect(xagentVerificationSchema.safeParse({ slug: "", commit: SHA }).success).toBe(false);
-    expect(xagentVerificationSchema.safeParse({ slug: "settle", commit: "abc" }).success).toBe(false);
+  it("schema rejects extra fields, other slugs, other schema versions and malformed commits", () => {
+    const valid = { schemaVersion: 1, slug: "modolu-settle", commit: SHA };
+    expect(xagentVerificationSchema.safeParse(valid).success).toBe(true);
+    expect(xagentVerificationSchema.safeParse({ ...valid, extra: 1 }).success).toBe(false);
+    expect(xagentVerificationSchema.safeParse({ ...valid, slug: "settle" }).success).toBe(false);
+    expect(xagentVerificationSchema.safeParse({ ...valid, schemaVersion: 2 }).success).toBe(false);
+    expect(xagentVerificationSchema.safeParse({ ...valid, schemaVersion: "1" }).success).toBe(false);
+    expect(xagentVerificationSchema.safeParse({ ...valid, commit: "abc" }).success).toBe(false);
+    expect(xagentVerificationSchema.safeParse({ slug: "modolu-settle", commit: SHA }).success).toBe(false);
   });
 });
