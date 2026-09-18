@@ -12,12 +12,13 @@ plus transaction evidence.
 
 ## Status
 
-Milestone 2 — exact-payer reconciliation. Intents created with a `payer` can
-be reconciled against canonical native Base USDC `Transfer` logs and move
-between `pending`, `detected` and `paid`, with paginated transaction evidence.
-Still to come (see `ARCHITECTURE.md` §17): `partial`/`overpaid`/`expired`,
-expiry-block resolution, payer-less matching and `ambiguous`, reorg handling
-(Milestone 3), and the demo UI (Milestone 4).
+Milestone 3 — the complete v1 reconciliation state model. Intents with or
+without a declared `payer` reconcile against canonical native Base USDC
+`Transfer` logs into `pending`, `detected`, `partial`, `paid`, `overpaid`,
+`expired` or `ambiguous`, with expiry-block resolution, canonical
+(reorg-aware) evidence and paginated evidence. Still to come (see
+`ARCHITECTURE.md` §17): the demo inspector UI (Milestone 4), abuse/failure
+hardening (Milestone 5) and submission hardening (Milestone 6).
 
 ## Stack
 
@@ -155,15 +156,36 @@ curl -i -X POST https://<deployment>/v1/payment-intents/pi_.../reconcile
 }
 ```
 
-Statuses in this milestone: `pending` (no evidence), `detected` (evidence
-exists but the confirmed total does not yet meet the obligation), `paid`
-(confirmed total ≥ expected). `paidAt` is the block timestamp of the transfer
-that first brought the confirmed total to the expected amount. Repeated calls
-never double-count: evidence is keyed by `(intent, txHash, logIndex)` and
-amounts are recomputed from the full window on every call. If the provider
-fails the response is `503 UPSTREAM_UNAVAILABLE` and nothing changes.
-Milestone 2 accepts only intents with a declared `payer`; a payer-less intent
-gets `400 VALIDATION_ERROR` until Milestone 3.
+Statuses, in precedence order (`ARCHITECTURE.md` §7.4):
+
+| Status | Condition |
+| --- | --- |
+| `ambiguous` | no declared payer and transfers from two or more senders; nothing is counted |
+| `overpaid` | confirmed total > expected |
+| `paid` | confirmed total = expected |
+| `partial` | 0 < confirmed total < expected, and not conclusively expired |
+| `detected` | evidence exists but none is confirmed yet, and not conclusively expired |
+| `expired` | expiry boundary passed, confirmed total short, and even the not-yet-confirmed in-window evidence could not satisfy it |
+| `pending` | nothing observed |
+
+Confirmed means `latestBlock − blockNumber + 1 ≥ requiredConfirmations`.
+`receivedAmount` sums confirmed matched transfers; `detectedAmount` sums all
+matched transfers. `paidAt` is the block timestamp of the transfer that first
+brought the confirmed total to the expected amount (also for `overpaid`).
+
+Window: `[startBlock, latestBlock]` until `expiresAt`; afterwards the greatest
+Base block with `timestamp ≤ expiresAt` is found by binary search, persisted
+once, and becomes the end of the window. A transfer mined before expiry may
+still confirm after it. `matchConfidence` is `exact_payer` for a declared
+payer, `single_sender` when every in-window transfer comes from one sender,
+`ambiguous` for several senders, `none` without evidence.
+
+Each reconcile is a complete canonical scan of the window: evidence is keyed by
+`(intent, txHash, logIndex)`, amounts are recomputed (never incremented),
+previously stored evidence inside the window that is no longer observed is
+marked `orphaned` and stops counting, and a stored transfer re-observed in a
+different block takes the newest block details. A failed provider call returns
+`503 UPSTREAM_UNAVAILABLE` and changes nothing — it never orphans evidence.
 
 ### `GET /v1/payment-intents/:id/evidence`
 
@@ -194,7 +216,9 @@ curl "https://<deployment>/v1/payment-intents/pi_.../evidence?limit=50"
 ```
 
 `blockNumber` is a decimal string; `confirmations` are as observed at the last
-accepted reconciliation.
+accepted reconciliation. `association` is `matched` (counts toward totals),
+`candidate` (seen for an `ambiguous` payer-less intent; never counted) or
+`orphaned` (no longer canonical; never counted).
 
 ### `GET /health`
 

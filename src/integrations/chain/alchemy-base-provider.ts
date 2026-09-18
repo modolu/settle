@@ -21,9 +21,10 @@ import {
 } from "viem";
 
 import { AppError } from "@/lib/errors";
-import type { ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
+import type { BlockRange, ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
 
 import { BASE_CHAIN, ERC20_TRANSFER_EVENT_ABI, USDC_CONTRACT_ADDRESS } from "./base-usdc";
+import { findLastBlockAtOrBefore } from "./block-search";
 
 /** The subset of a viem public client the provider uses; injectable for tests. */
 export type BaseRpcClient = Pick<PublicClient, "getBlockNumber" | "getLogs" | "getBlock">;
@@ -122,7 +123,10 @@ function toChainTransfer(log: unknown, query: UsdcTransferQuery): ChainTransfer 
     throw invalidResponse("getLogs", "log marked removed");
   }
   const args = (candidate.args ?? {}) as { from?: unknown; to?: unknown; value?: unknown };
-  if (typeof args.from !== "string" || !isAddress(args.from) || args.from.toLowerCase() !== query.payer) {
+  if (typeof args.from !== "string" || !isAddress(args.from)) {
+    throw invalidResponse("getLogs", "log sender malformed");
+  }
+  if (query.payer !== null && args.from.toLowerCase() !== query.payer) {
     throw invalidResponse("getLogs", "log sender does not match the payer filter");
   }
   if (typeof args.to !== "string" || !isAddress(args.to) || args.to.toLowerCase() !== query.recipient) {
@@ -167,7 +171,7 @@ export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): 
       cacheTime: 0,
     });
 
-  return {
+  const provider: ChainProvider = {
     async getLatestBlock(): Promise<bigint> {
       let result: unknown;
       try {
@@ -187,12 +191,16 @@ export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): 
       }
       let logs: unknown;
       try {
-        // eth_getLogs filtered server-side by contract, event signature and both indexed
-        // parameters (topics[1] = from, topics[2] = to), exactly one block range, no truncation.
+        // eth_getLogs filtered server-side by contract, event signature and the indexed
+        // recipient (topics[2] = to) — plus the indexed sender (topics[1] = from) when a
+        // payer is declared — over exactly one block range, never truncated.
         logs = await client.getLogs({
           address: USDC_CONTRACT_ADDRESS,
           event: TRANSFER_EVENT,
-          args: { from: getAddress(query.payer), to: getAddress(query.recipient) },
+          args:
+            query.payer === null
+              ? { to: getAddress(query.recipient) }
+              : { from: getAddress(query.payer), to: getAddress(query.recipient) },
           fromBlock: query.fromBlock,
           toBlock: query.toBlock,
           strict: true,
@@ -223,5 +231,11 @@ export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): 
       // Seconds since epoch fit a JavaScript number exactly up to year 9999.
       return new Date(Number(header.timestamp) * 1000);
     },
+
+    async findLastBlockAtOrBefore(at: Date, range: BlockRange): Promise<bigint | null> {
+      const outcome = await findLastBlockAtOrBefore((blockNumber) => provider.getBlockTimestamp(blockNumber), at, range);
+      return outcome.blockNumber;
+    },
   };
+  return provider;
 }

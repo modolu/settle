@@ -182,7 +182,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository (Neon
 import { and, eq } from "drizzle-orm";
 
 import { matchedTransfers, reconciliationAttempts } from "@/db/schema";
-import { reconcileExactPayer, type ObservedTransfer } from "@/domain/reconciliation";
+import { reconcile, type ObservedTransfer } from "@/domain/reconciliation";
 import type { ReconciliationObservation } from "@/ports/payment-repository";
 
 const PAYER = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
@@ -218,12 +218,29 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — r
     };
   }
 
-  function observation(latestBlock: bigint, transfers: ObservedTransfer[], expected = 25_000_000n, requestId = "req_it"): ReconciliationObservation {
+  function observation(
+    latestBlock: bigint,
+    transfers: ObservedTransfer[],
+    expected = 25_000_000n,
+    requestId = "req_it",
+    options: { payer?: string | null; toBlock?: bigint; expiryPassed?: boolean; expiryBlock?: bigint | null } = {},
+  ): ReconciliationObservation {
     const startedAt = new Date();
+    const window = { fromBlock: 1_000n, toBlock: options.toBlock ?? latestBlock };
     return {
       latestBlock,
-      result: reconcileExactPayer({ expectedAmountUnits: expected, requiredConfirmations: 3, latestBlock, transfers }),
-      attempt: { requestId, provider: "alchemy", fromBlock: 1_000n, toBlock: latestBlock, candidateCount: transfers.length, startedAt, completedAt: new Date(startedAt.getTime() + 5) },
+      window,
+      expiryBlock: options.expiryBlock ?? null,
+      result: reconcile({
+        expectedAmountUnits: expected,
+        requiredConfirmations: 3,
+        latestBlock,
+        payer: options.payer === undefined ? PAYER : options.payer,
+        window,
+        expiryPassed: options.expiryPassed ?? false,
+        transfers,
+      }),
+      attempt: { requestId, provider: "alchemy", fromBlock: 1_000n, toBlock: window.toBlock, candidateCount: transfers.length, startedAt, completedAt: new Date(startedAt.getTime() + 5) },
     };
   }
 
@@ -415,5 +432,189 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — r
     const all = await repository.getEvidencePage(intent.id, { limit: 100, cursor: null });
     expect(all.items).toHaveLength(5);
     expect(all.nextCursor).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone 3: canonical evidence (orphaning), associations, expiry block
+// ---------------------------------------------------------------------------
+const SENDER_B = "0x1111111111111111111111111111111111111111";
+
+describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — canonical evidence (Neon)", () => {
+  let handle: DatabaseHandle;
+  const createdIds: string[] = [];
+
+  beforeAll(async () => {
+    handle = createDatabase(TEST_DATABASE_URL as string);
+    await migrate(handle.db, { migrationsFolder: "drizzle" });
+  });
+
+  afterAll(async () => {
+    for (const id of createdIds) {
+      await handle.db.delete(reconciliationAttempts).where(eq(reconciliationAttempts.paymentIntentId, id));
+      await handle.db.delete(matchedTransfers).where(eq(matchedTransfers.paymentIntentId, id));
+      await handle.db.delete(paymentIntents).where(eq(paymentIntents.id, id));
+    }
+    await handle.pool.end();
+  });
+
+  function observedTransfer(overrides: Partial<ObservedTransfer> & { blockNumber: bigint; amountUnits: bigint }): ObservedTransfer {
+    return {
+      txHash: `0x${overrides.blockNumber.toString(16).padStart(64, "0")}`,
+      logIndex: 0,
+      blockHash: `0x${"b".repeat(64)}`,
+      from: PAYER,
+      to: RECIPIENT,
+      blockTimestamp: new Date(Number(overrides.blockNumber) * 2_000),
+      ...overrides,
+    };
+  }
+
+  function observation(
+    latestBlock: bigint,
+    transfers: ObservedTransfer[],
+    options: { payer?: string | null; toBlock?: bigint; expiryPassed?: boolean; expiryBlock?: bigint | null; expected?: bigint; requestId?: string } = {},
+  ): ReconciliationObservation {
+    const startedAt = new Date();
+    const window = { fromBlock: 1_000n, toBlock: options.toBlock ?? latestBlock };
+    return {
+      latestBlock,
+      window,
+      expiryBlock: options.expiryBlock ?? null,
+      result: reconcile({
+        expectedAmountUnits: options.expected ?? 25_000_000n,
+        requiredConfirmations: 3,
+        latestBlock,
+        payer: options.payer === undefined ? PAYER : options.payer,
+        window,
+        expiryPassed: options.expiryPassed ?? false,
+        transfers,
+      }),
+      attempt: { requestId: options.requestId ?? "req_it", provider: "alchemy", fromBlock: 1_000n, toBlock: window.toBlock, candidateCount: transfers.length, startedAt, completedAt: startedAt },
+    };
+  }
+
+  async function seedIntent(payer: string | null = PAYER, expected = 25_000_000n) {
+    const repository = createDrizzlePaymentRepository(handle.db);
+    const id = newPaymentIntentId();
+    createdIds.push(id);
+    const intent = await repository.createPaymentIntent({
+      id,
+      externalReference: null,
+      expectedAmountUnits: expected,
+      recipientAddress: RECIPIENT,
+      payerAddress: payer,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      requiredConfirmations: 3,
+      startBlock: 1_000n,
+    });
+    return { repository, intent };
+  }
+
+  async function rows(id: string) {
+    return handle.db
+      .select()
+      .from(matchedTransfers)
+      .where(eq(matchedTransfers.paymentIntentId, id))
+      .orderBy(matchedTransfers.blockNumber, matchedTransfers.logIndex, matchedTransfers.txHash);
+  }
+
+  it("matched → orphaned when absent from a later complete scan; totals and status regress", async () => {
+    const { repository, intent } = await seedIntent();
+    const transfer = observedTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n });
+    expect((await repository.applyReconciliation(intent.id, observation(1_100n, [transfer])))?.intent.status).toBe("paid");
+
+    const outcome = await repository.applyReconciliation(intent.id, observation(1_101n, []));
+    expect(outcome?.intent).toMatchObject({ status: "pending", receivedAmountUnits: 0n, detectedAmountUnits: 0n, matchConfidence: "none", paidAt: null });
+    const [row] = await rows(intent.id);
+    expect(row?.association).toBe("orphaned");
+    expect(await rows(intent.id)).toHaveLength(1);
+  });
+
+  it("orphaned → matched again when the identity is canonical again", async () => {
+    const { repository, intent } = await seedIntent();
+    const transfer = observedTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n });
+    await repository.applyReconciliation(intent.id, observation(1_100n, [transfer]));
+    await repository.applyReconciliation(intent.id, observation(1_101n, []));
+    expect((await rows(intent.id))[0]?.association).toBe("orphaned");
+
+    const outcome = await repository.applyReconciliation(intent.id, observation(1_102n, [transfer]));
+    expect(outcome?.intent.status).toBe("paid");
+    const all = await rows(intent.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ association: "matched", confirmations: 53 });
+  });
+
+  it("block hash change: the same identity re-observed in another canonical block updates the row", async () => {
+    const { repository, intent } = await seedIntent();
+    const transfer = observedTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n, blockHash: `0x${"1".repeat(64)}` });
+    await repository.applyReconciliation(intent.id, observation(1_100n, [transfer]));
+    const moved = { ...transfer, blockNumber: 1_052n, blockHash: `0x${"2".repeat(64)}`, blockTimestamp: new Date(1_052 * 2_000) };
+    await repository.applyReconciliation(intent.id, observation(1_101n, [moved]));
+    const all = await rows(intent.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ blockNumber: 1_052n, blockHash: `0x${"2".repeat(64)}`, association: "matched", confirmations: 50 });
+    expect(all[0]?.blockTimestamp.getTime()).toBe(1_052 * 2_000);
+  });
+
+  it("candidate rows never affect received/detected; candidate → orphaned and candidate → matched as ambiguity resolves", async () => {
+    const { repository, intent } = await seedIntent(null);
+    const a = observedTransfer({ blockNumber: 1_010n, amountUnits: 25_000_000n, from: SENDER_B });
+    const b = observedTransfer({ blockNumber: 1_020n, amountUnits: 1n, from: PAYER });
+
+    const ambiguous = await repository.applyReconciliation(intent.id, observation(1_100n, [a, b], { payer: null }));
+    expect(ambiguous?.intent).toMatchObject({ status: "ambiguous", matchConfidence: "ambiguous", receivedAmountUnits: 0n, detectedAmountUnits: 0n });
+    expect((await rows(intent.id)).map((row) => row.association)).toEqual(["candidate", "candidate"]);
+
+    const resolved = await repository.applyReconciliation(intent.id, observation(1_101n, [a], { payer: null }));
+    expect(resolved?.intent).toMatchObject({ status: "paid", matchConfidence: "single_sender", receivedAmountUnits: 25_000_000n });
+    expect((await rows(intent.id)).map((row) => [row.txHash, row.association])).toEqual([
+      [a.txHash, "matched"],
+      [b.txHash, "orphaned"],
+    ]);
+  });
+
+  it("a stale concurrent observation cannot re-match orphaned evidence, alter totals, or regress the expiry block", async () => {
+    const { repository, intent } = await seedIntent();
+    const transfer = observedTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n });
+    await repository.applyReconciliation(intent.id, observation(1_100n, [transfer]));
+    const newest = await repository.applyReconciliation(intent.id, observation(1_120n, [], { toBlock: 1_060n, expiryPassed: true, expiryBlock: 1_060n }));
+    expect(newest?.intent).toMatchObject({ status: "expired", expiryBlock: 1_060n, lastReconciledBlock: 1_120n });
+    expect((await rows(intent.id))[0]?.association).toBe("orphaned");
+
+    const stale = await repository.applyReconciliation(intent.id, observation(1_110n, [transfer], { expiryBlock: 1_070n, requestId: "req_stale" }));
+    expect(stale?.applied).toBe(false);
+    expect(stale?.intent).toEqual(newest?.intent);
+    expect((await rows(intent.id))[0]?.association).toBe("orphaned");
+    expect((await repository.getPaymentIntentById(intent.id))?.expiryBlock).toBe(1_060n);
+  });
+
+  it("persists the first resolved expiry block and never regresses or overwrites it", async () => {
+    const { repository, intent } = await seedIntent();
+    const first = await repository.applyReconciliation(intent.id, observation(1_100n, [], { toBlock: 1_050n, expiryPassed: true, expiryBlock: 1_050n }));
+    expect(first?.intent.expiryBlock).toBe(1_050n);
+    const second = await repository.applyReconciliation(intent.id, observation(1_101n, [], { toBlock: 1_050n, expiryPassed: true, expiryBlock: 1_049n }));
+    expect(second?.intent.expiryBlock).toBe(1_050n);
+    const third = await repository.applyReconciliation(intent.id, observation(1_102n, [], { toBlock: 1_050n, expiryPassed: true, expiryBlock: null }));
+    expect(third?.intent.expiryBlock).toBe(1_050n);
+  });
+
+  it("does not orphan evidence outside the scanned window", async () => {
+    const { repository, intent } = await seedIntent();
+    const late = observedTransfer({ blockNumber: 1_080n, amountUnits: 25_000_000n });
+    await repository.applyReconciliation(intent.id, observation(1_100n, [late]));
+    const narrowed = await repository.applyReconciliation(intent.id, observation(1_101n, [], { toBlock: 1_050n, expiryPassed: true, expiryBlock: 1_050n }));
+    expect(narrowed?.intent.status).toBe("expired");
+    expect((await rows(intent.id))[0]?.association).toBe("matched");
+  });
+
+  it("never creates duplicate evidence rows across orphan/restore cycles", async () => {
+    const { repository, intent } = await seedIntent();
+    const transfer = observedTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n });
+    for (let i = 0; i < 4; i += 1) {
+      await repository.applyReconciliation(intent.id, observation(1_100n + BigInt(i * 2), [transfer]));
+      await repository.applyReconciliation(intent.id, observation(1_101n + BigInt(i * 2), []));
+    }
+    expect(await rows(intent.id)).toHaveLength(1);
   });
 });

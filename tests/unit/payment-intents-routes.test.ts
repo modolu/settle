@@ -260,17 +260,52 @@ describe("POST /v1/payment-intents/:id/reconcile", () => {
     expect((await reconcile("nope")).status).toBe(400);
   });
 
-  it("MILESTONE 2 LIMITATION: returns 400 VALIDATION_ERROR for an intent without a payer", async () => {
-    wire(new FakeChainProvider({ latestBlock: 1n, transfers: [] }));
-    const withoutPayer: Record<string, unknown> = { ...validBody };
+  it("reconciles a payer-less intent: two senders → ambiguous with candidate evidence and zero received", async () => {
+    const chainProvider = new FakeChainProvider({ latestBlock: 100n, transfers: [] });
+    wire(chainProvider);
+    const withoutPayer: Record<string, unknown> = { ...validBody, amount: "100.00" };
     delete withoutPayer["payer"];
     const created = (await (await post(withoutPayer)).json()) as { id: string; payer: null };
     expect(created.payer).toBeNull();
+
+    chainProvider.state.latestBlock = 200n;
+    chainProvider.state.transfers = [
+      { txHash: `0x${"a".repeat(64)}`, logIndex: 1, blockNumber: 110n, blockHash: `0x${"f".repeat(64)}`, from: PAYER.toLowerCase(), to: RECIPIENT.toLowerCase(), amountUnits: 100_000_000n },
+      { txHash: `0x${"b".repeat(64)}`, logIndex: 2, blockNumber: 120n, blockHash: `0x${"f".repeat(64)}`, from: "0x1111111111111111111111111111111111111111", to: RECIPIENT.toLowerCase(), amountUnits: 5_000_000n },
+    ];
     const response = await reconcile(created.id);
-    expect(response.status).toBe(400);
-    const envelope = (await response.json()) as { error: { code: string; message: string } };
-    expect(envelope.error.code).toBe("VALIDATION_ERROR");
-    expect(envelope.error.message).toMatch(/without a declared payer/);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      status: "ambiguous",
+      matchConfidence: "ambiguous",
+      expectedAmount: "100.00",
+      receivedAmount: "0.00",
+      remainingAmount: "100.00",
+      payer: null,
+      paidAt: null,
+    });
+
+    const evidenceBody = (await (await evidence(created.id)).json()) as { evidence: Array<Record<string, unknown>> };
+    expect(evidenceBody.evidence.map((row) => [row["from"], row["amount"], row["association"]])).toEqual([
+      [PAYER, "100.00", "candidate"],
+      ["0x1111111111111111111111111111111111111111", "5.00", "candidate"],
+    ]);
+  });
+
+  it("reconciles a payer-less intent: one sender → single_sender and paid", async () => {
+    const chainProvider = new FakeChainProvider({ latestBlock: 100n, transfers: [] });
+    wire(chainProvider);
+    const withoutPayer: Record<string, unknown> = { ...validBody, amount: "25.00" };
+    delete withoutPayer["payer"];
+    const created = (await (await post(withoutPayer)).json()) as { id: string };
+    chainProvider.state.latestBlock = 200n;
+    chainProvider.state.transfers = [
+      { txHash: `0x${"a".repeat(64)}`, logIndex: 1, blockNumber: 110n, blockHash: `0x${"f".repeat(64)}`, from: PAYER.toLowerCase(), to: RECIPIENT.toLowerCase(), amountUnits: 25_000_000n },
+    ];
+    chainProvider.state.timestamps = new Map([[110n, new Date("2026-09-18T08:00:00.000Z")]]);
+    const body = (await (await reconcile(created.id)).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ status: "paid", matchConfidence: "single_sender", receivedAmount: "25.00", remainingAmount: "0.00", paidAt: "2026-09-18T08:00:00.000Z", payer: null });
   });
 });
 

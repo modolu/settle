@@ -2,25 +2,23 @@
  * Use case: caller-triggered reconciliation of one intent (ARCHITECTURE.md §8.2).
  *
  *   load intent
- *   → require a declared payer (Milestone 2 supports exact-payer matching only)
  *   → latestBlock = ChainProvider.getLatestBlock()
- *   → window = [intent.startBlock, latestBlock]
- *   → ChainProvider.getUsdcTransfers(payer → recipient in window)
+ *   → window end = latest, or the resolved expiry block once `expiresAt` has passed
+ *   → ChainProvider.getUsdcTransfers(recipient, payer when declared, window)
+ *   → defensively verify every transfer against the intent and the window
  *   → one timestamp lookup per distinct block
- *   → pure domain reconciliation
- *   → repository applies the observation atomically
+ *   → pure domain reconciliation (association, depth, status precedence)
+ *   → repository applies the canonical observation atomically
  *
  * Provider calls happen outside any database transaction. A provider failure
  * is recorded as a failed attempt (when the database allows) and re-thrown as
- * the retryable upstream error; it never touches intent state or evidence.
- *
- * Milestone 2 limitation: the window ends at the latest block even after
- * `expiresAt`; expiry-block resolution and `expired` belong to Milestone 3.
+ * the upstream error; it never touches intent state or evidence, so a failed
+ * scan can never orphan anything.
  */
 import "server-only";
 
 import type { PaymentIntent } from "@/domain/payment-intent";
-import { reconcileExactPayer, type ObservedTransfer } from "@/domain/reconciliation";
+import { reconcile, type BlockWindow, type ObservedTransfer } from "@/domain/reconciliation";
 import { AppError, isAppError } from "@/lib/errors";
 import type { ChainProvider, ChainTransfer } from "@/ports/chain-provider";
 import type { PaymentRepository } from "@/ports/payment-repository";
@@ -41,25 +39,49 @@ export interface ReconcileOutcome {
   readonly candidateCount: number;
 }
 
-/**
- * Milestone 2 does not implement no-payer association (ARCHITECTURE.md §7.3
- * arrives in Milestone 3). Reconciling such an intent is refused
- * deterministically instead of scanning every transfer to the recipient.
- */
-export class PayerRequiredError extends AppError {
-  constructor() {
-    super(
-      "VALIDATION_ERROR",
-      "Reconciliation of intents without a declared payer is not available yet; create the intent with a payer address",
-    );
-    this.name = "PayerRequiredError";
-  }
+interface ResolvedWindow {
+  readonly window: BlockWindow;
+  /** `true` when `window.toBlock` is the expiry boundary and the obligation's time has run out. */
+  readonly expiryPassed: boolean;
+  /** Expiry block newly resolved by this observation, to be persisted once. */
+  readonly resolvedExpiryBlock: bigint | null;
 }
 
-function assertMatchesIntent(transfer: ChainTransfer, payer: string, recipient: string): void {
-  if (transfer.from !== payer || transfer.to !== recipient) {
+/**
+ * Determines how far this observation may look (ARCHITECTURE.md §7.1).
+ * Before `expiresAt` the window runs to the latest block. After it, the
+ * boundary is the greatest block with `timestamp <= expiresAt`, searched once
+ * and then persisted. If the latest block itself is not later than
+ * `expiresAt` the chain has not reached the boundary yet, so nothing is
+ * persisted and the window still runs to the latest block.
+ */
+async function resolveWindow(intent: PaymentIntent, latestBlock: bigint, now: Date, chain: ChainProvider): Promise<ResolvedWindow> {
+  const fromBlock = intent.startBlock;
+
+  if (intent.expiryBlock !== null) {
+    const toBlock = intent.expiryBlock < latestBlock ? intent.expiryBlock : latestBlock;
+    return { window: { fromBlock, toBlock }, expiryPassed: intent.expiryBlock <= latestBlock, resolvedExpiryBlock: null };
+  }
+  if (now.getTime() <= intent.expiresAt.getTime() || fromBlock > latestBlock) {
+    return { window: { fromBlock, toBlock: latestBlock }, expiryPassed: false, resolvedExpiryBlock: null };
+  }
+
+  const boundary = await chain.findLastBlockAtOrBefore(intent.expiresAt, { fromBlock, toBlock: latestBlock });
+  if (boundary === latestBlock) {
+    return { window: { fromBlock, toBlock: latestBlock }, expiryPassed: false, resolvedExpiryBlock: null };
+  }
+  // `null` means the first eligible block already post-dates expiry: an empty window.
+  const expiryBlock = boundary ?? fromBlock - 1n;
+  return { window: { fromBlock, toBlock: expiryBlock }, expiryPassed: true, resolvedExpiryBlock: expiryBlock };
+}
+
+function assertTransferBelongs(transfer: ChainTransfer, intent: PaymentIntent, window: BlockWindow): void {
+  const outsideFilter =
+    transfer.to !== intent.recipientAddress || (intent.payerAddress !== null && transfer.from !== intent.payerAddress);
+  const outsideWindow = transfer.blockNumber < window.fromBlock || transfer.blockNumber > window.toBlock;
+  if (outsideFilter || outsideWindow) {
     throw new AppError("UPSTREAM_INVALID_RESPONSE", "Blockchain provider returned a transfer outside the query filter", {
-      context: { txHash: transfer.txHash, logIndex: transfer.logIndex },
+      context: { txHash: transfer.txHash, logIndex: transfer.logIndex, outsideFilter, outsideWindow },
     });
   }
 }
@@ -73,30 +95,28 @@ export async function reconcilePaymentIntent(
   if (intent === null) {
     throw new AppError("INTENT_NOT_FOUND", "Payment intent not found");
   }
-  const payer = intent.payerAddress;
-  if (payer === null) {
-    throw new PayerRequiredError();
-  }
 
   const startedAt = now();
   const attemptBase = { requestId: deps.requestId, provider: "alchemy" as const, fromBlock: intent.startBlock, startedAt };
   let latestBlock: bigint | null = null;
+  let toBlock: bigint | null = null;
 
   try {
     latestBlock = await deps.chainProvider.getLatestBlock();
+    const { window, expiryPassed, resolvedExpiryBlock } = await resolveWindow(intent, latestBlock, startedAt, deps.chainProvider);
+    toBlock = window.toBlock;
 
-    // An intent created at latest + 1 has an empty window until the next block.
     const transfers: ChainTransfer[] =
-      intent.startBlock > latestBlock
+      window.fromBlock > window.toBlock
         ? []
         : await deps.chainProvider.getUsdcTransfers({
-            fromBlock: intent.startBlock,
-            toBlock: latestBlock,
+            fromBlock: window.fromBlock,
+            toBlock: window.toBlock,
             recipient: intent.recipientAddress,
-            payer,
+            payer: intent.payerAddress,
           });
     for (const transfer of transfers) {
-      assertMatchesIntent(transfer, payer, intent.recipientAddress);
+      assertTransferBelongs(transfer, intent, window);
     }
 
     // Timestamps: one lookup per distinct block, however many transfers share it.
@@ -106,7 +126,6 @@ export async function reconcilePaymentIntent(
         blockNumbers.map(async (blockNumber) => [blockNumber, await deps.chainProvider.getBlockTimestamp(blockNumber)] as const),
       ),
     );
-
     const observed: ObservedTransfer[] = transfers.map((transfer) => {
       const blockTimestamp = timestamps.get(transfer.blockNumber);
       if (blockTimestamp === undefined) {
@@ -115,17 +134,22 @@ export async function reconcilePaymentIntent(
       return { ...transfer, blockTimestamp };
     });
 
-    const result = reconcileExactPayer({
+    const result = reconcile({
       expectedAmountUnits: intent.expectedAmountUnits,
       requiredConfirmations: intent.requiredConfirmations,
       latestBlock,
+      payer: intent.payerAddress,
+      window,
+      expiryPassed,
       transfers: observed,
     });
 
     const outcome = await deps.paymentRepository.applyReconciliation(intent.id, {
       latestBlock,
+      window,
+      expiryBlock: resolvedExpiryBlock,
       result,
-      attempt: { ...attemptBase, toBlock: latestBlock, candidateCount: transfers.length, completedAt: now() },
+      attempt: { ...attemptBase, toBlock: window.toBlock, candidateCount: transfers.length, completedAt: now() },
     });
     if (outcome === null) {
       throw new AppError("INTENT_NOT_FOUND", "Payment intent not found");
@@ -138,7 +162,7 @@ export async function reconcilePaymentIntent(
       await deps.paymentRepository
         .recordReconciliationAttempt(intent.id, {
           ...attemptBase,
-          toBlock: latestBlock ?? intent.startBlock,
+          toBlock: toBlock ?? latestBlock ?? intent.startBlock,
           latestBlock,
           candidateCount: 0,
           resultStatus: null,

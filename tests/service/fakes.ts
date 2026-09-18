@@ -10,8 +10,9 @@ import {
   type NewPaymentIntent,
   type PaymentIntent,
 } from "@/domain/payment-intent";
-import { compareTransfers, transferIdentity } from "@/domain/reconciliation";
-import type { ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
+import { compareTransfers, isInWindow, transferIdentity } from "@/domain/reconciliation";
+import { findLastBlockAtOrBefore } from "@/integrations/chain/block-search";
+import type { BlockRange, ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
 import type {
   ApplyReconciliationOutcome,
   EvidenceCursor,
@@ -36,6 +37,7 @@ export class FakeChainProvider implements ChainProvider {
   calls = 0;
   readonly transferQueries: UsdcTransferQuery[] = [];
   readonly timestampRequests: bigint[] = [];
+  readonly searchRequests: Array<{ at: Date; range: BlockRange }> = [];
   state: FakeChainState;
 
   constructor(behaviour: { latestBlock: bigint } | { error: Error } | FakeChainState) {
@@ -63,7 +65,7 @@ export class FakeChainProvider implements ChainProvider {
     }
     return this.state.transfers.filter(
       (transfer) =>
-        transfer.from === query.payer &&
+        (query.payer === null || transfer.from === query.payer) &&
         transfer.to === query.recipient &&
         transfer.blockNumber >= query.fromBlock &&
         transfer.blockNumber <= query.toBlock,
@@ -76,6 +78,12 @@ export class FakeChainProvider implements ChainProvider {
       throw this.state.failTimestamps;
     }
     return this.state.timestamps?.get(blockNumber) ?? new Date(Number(blockNumber) * 2_000);
+  }
+
+  async findLastBlockAtOrBefore(at: Date, range: BlockRange): Promise<bigint | null> {
+    this.searchRequests.push({ at, range });
+    const outcome = await findLastBlockAtOrBefore((blockNumber) => this.getBlockTimestamp(blockNumber), at, range);
+    return outcome.blockNumber;
   }
 }
 
@@ -140,6 +148,16 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 
     if (!stale) {
       const rows = this.evidence.get(intentId) ?? new Map<string, MatchedTransfer>();
+      const seen = new Set(observation.result.transfers.map(transferIdentity));
+      for (const [identity, row] of rows) {
+        if (
+          !seen.has(identity) &&
+          row.association !== "orphaned" &&
+          isInWindow(row.blockNumber, observation.window)
+        ) {
+          rows.set(identity, { ...row, association: "orphaned" });
+        }
+      }
       for (const transfer of observation.result.transfers) {
         const identity = transferIdentity(transfer);
         const existing = rows.get(identity);
@@ -166,6 +184,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
         detectedAmountUnits: observation.result.detectedAmountUnits,
         matchConfidence: observation.result.matchConfidence,
         paidAt: observation.result.paidAt,
+        expiryBlock: current.expiryBlock ?? observation.expiryBlock,
         lastReconciledBlock: observation.latestBlock,
         lastReconciledAt: now,
         updatedAt: now,

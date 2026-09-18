@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reconcileExactPayer, type ObservedTransfer } from "@/domain/reconciliation";
+import { reconcile, type ObservedTransfer } from "@/domain/reconciliation";
 import { AppError } from "@/lib/errors";
 import { newPaymentIntentId } from "@/lib/ids";
 import { getPaymentEvidence } from "@/services/get-payment-evidence";
@@ -38,9 +38,12 @@ async function seed(count: number) {
   const transfers = Array.from({ length: count }, (_, i) =>
     observed(BigInt(100 + Math.floor(i / 2)), i % 2, `0x${String(i).padStart(64, "0")}`),
   );
+  const window = { fromBlock: 1n, toBlock: 10_000n };
   await paymentRepository.applyReconciliation(intent.id, {
     latestBlock: 10_000n,
-    result: reconcileExactPayer({ expectedAmountUnits: 1_000_000_000n, requiredConfirmations: 1, latestBlock: 10_000n, transfers }),
+    window,
+    expiryBlock: null,
+    result: reconcile({ expectedAmountUnits: 1_000_000_000n, requiredConfirmations: 1, latestBlock: 10_000n, payer: PAYER, window, expiryPassed: false, transfers }),
     attempt: { requestId: "r", provider: "alchemy", fromBlock: 1n, toBlock: 10_000n, candidateCount: count, startedAt: new Date(), completedAt: new Date() },
   });
   return { paymentRepository, intent };

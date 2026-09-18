@@ -5,7 +5,7 @@
  * timestamps) and own transaction/locking mechanics.
  */
 import type { MatchedTransfer, NewPaymentIntent, PaymentIntent, PaymentStatus } from "@/domain/payment-intent";
-import type { ReconciliationResult } from "@/domain/reconciliation";
+import type { BlockWindow, ReconciliationResult } from "@/domain/reconciliation";
 
 /** Operational record of one reconcile request (`reconciliation_attempts`). */
 export interface ReconciliationAttemptRecord {
@@ -21,9 +21,13 @@ export interface ReconciliationAttemptRecord {
   readonly completedAt: Date;
 }
 
-/** One complete observation of the chain for an intent, ready to be applied atomically. */
+/** One complete canonical observation of the chain for an intent, ready to be applied atomically. */
 export interface ReconciliationObservation {
   readonly latestBlock: bigint;
+  /** Blocks the scan covered completely; stored evidence inside it that was not re-observed becomes `orphaned`. */
+  readonly window: BlockWindow;
+  /** Resolved expiry boundary to persist, or `null` when not (yet) resolved. Never regresses a stored value. */
+  readonly expiryBlock: bigint | null;
   readonly result: ReconciliationResult;
   readonly attempt: Omit<ReconciliationAttemptRecord, "latestBlock" | "resultStatus" | "errorCode">;
 }
@@ -55,7 +59,9 @@ export interface PaymentRepository {
   /**
    * Atomically applies an observation: locks the intent, rejects observations
    * older than `last_reconciled_block` without touching state, upserts evidence
-   * by `(intent, txHash, logIndex)`, persists the domain-computed state and
+   * by `(intent, txHash, logIndex)` (newest canonical block details win),
+   * orphans stored evidence inside `window` that the scan did not re-observe,
+   * persists the domain-computed state plus a first-resolved expiry block and
    * records the attempt. Returns `null` when the intent does not exist.
    */
   applyReconciliation(intentId: string, observation: ReconciliationObservation): Promise<ApplyReconciliationOutcome | null>;

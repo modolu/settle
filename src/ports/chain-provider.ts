@@ -23,9 +23,15 @@ export interface UsdcTransferQuery {
   /** Inclusive block range; `fromBlock <= toBlock`. */
   readonly fromBlock: bigint;
   readonly toBlock: bigint;
-  /** Lowercase addresses; both are filtered at the log-query level. */
+  /** Lowercase recipient; always filtered at the log-query level. */
   readonly recipient: string;
-  readonly payer: string;
+  /** Lowercase payer; when present it is filtered at the log-query level too, otherwise every sender is returned. */
+  readonly payer: string | null;
+}
+
+export interface BlockRange {
+  readonly fromBlock: bigint;
+  readonly toBlock: bigint;
 }
 
 export interface ChainProvider {
@@ -33,12 +39,20 @@ export interface ChainProvider {
   getLatestBlock(): Promise<bigint>;
 
   /**
-   * Canonical native Base USDC transfers from `payer` to `recipient` within the
-   * block range. A query failure throws an `UPSTREAM_*` error and is never
-   * reported as "no transfers".
+   * Canonical native Base USDC transfers to `recipient` (from `payer` when
+   * declared) within the block range. A query failure throws an `UPSTREAM_*`
+   * error and is never reported as "no transfers".
    */
   getUsdcTransfers(query: UsdcTransferQuery): Promise<ChainTransfer[]>;
 
   /** Timestamp of the canonical block at `blockNumber`. */
   getBlockTimestamp(blockNumber: bigint): Promise<Date>;
+
+  /**
+   * Greatest block in `range` whose timestamp is `<= at`, or `null` when even
+   * `range.fromBlock` is later than `at`. Returns `range.toBlock` when that
+   * block itself is not later than `at`. The provider owns the search
+   * mechanics (ARCHITECTURE.md §7.1).
+   */
+  findLastBlockAtOrBefore(at: Date, range: BlockRange): Promise<bigint | null>;
 }

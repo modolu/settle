@@ -6,7 +6,7 @@
  */
 import "server-only";
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 
 import type { Database } from "@/db/client";
 import { matchedTransfers, paymentIntents, reconciliationAttempts } from "@/db/schema";
@@ -18,6 +18,7 @@ import {
   type NewPaymentIntent,
   type PaymentIntent,
 } from "@/domain/payment-intent";
+import { transferIdentity } from "@/domain/reconciliation";
 import type {
   ApplyReconciliationOutcome,
   EvidenceCursor,
@@ -165,7 +166,9 @@ export function createDrizzlePaymentRepository(db: Database): PaymentRepository 
         if (!stale) {
           for (const transfer of result.transfers) {
             // Identity (intent, tx_hash, log_index) is the double-counting guard: a
-            // re-observed transfer refreshes its depth and last_seen_at, never a new row.
+            // re-observed transfer refreshes its canonical block details, depth,
+            // association and last_seen_at — never a new row. An orphaned identity
+            // seen canonically again returns to matched/candidate here.
             await tx
               .insert(matchedTransfers)
               .values({
@@ -188,6 +191,8 @@ export function createDrizzlePaymentRepository(db: Database): PaymentRepository 
                 set: {
                   blockNumber: transfer.blockNumber,
                   blockHash: transfer.blockHash,
+                  fromAddress: transfer.from,
+                  toAddress: transfer.to,
                   amountUnits: transfer.amountUnits,
                   blockTimestamp: transfer.blockTimestamp,
                   association: transfer.association,
@@ -197,7 +202,33 @@ export function createDrizzlePaymentRepository(db: Database): PaymentRepository 
               });
           }
 
+          // The scan is a complete canonical view of `window`: live evidence inside it
+          // that was not re-observed is no longer canonical. Rows outside the window
+          // are untouched — the scan says nothing about them (ARCHITECTURE.md §7.5).
+          if (observation.window.fromBlock <= observation.window.toBlock) {
+            const seen = new Set(result.transfers.map(transferIdentity));
+            const live = await tx
+              .select({ id: matchedTransfers.id, txHash: matchedTransfers.txHash, logIndex: matchedTransfers.logIndex })
+              .from(matchedTransfers)
+              .where(
+                and(
+                  eq(matchedTransfers.paymentIntentId, intentId),
+                  inArray(matchedTransfers.association, ["matched", "candidate"]),
+                  gte(matchedTransfers.blockNumber, observation.window.fromBlock),
+                  lte(matchedTransfers.blockNumber, observation.window.toBlock),
+                ),
+              );
+            const orphanIds = live.filter((row) => !seen.has(transferIdentity(row))).map((row) => row.id);
+            if (orphanIds.length > 0) {
+              await tx
+                .update(matchedTransfers)
+                .set({ association: "orphaned" })
+                .where(inArray(matchedTransfers.id, orphanIds));
+            }
+          }
+
           // Amounts are the domain's recomputation over the full window, never an increment.
+          // The expiry block is written once and never regressed.
           const [updated] = await tx
             .update(paymentIntents)
             .set({
@@ -206,6 +237,7 @@ export function createDrizzlePaymentRepository(db: Database): PaymentRepository 
               detectedAmountUnits: result.detectedAmountUnits,
               matchConfidence: result.matchConfidence,
               paidAt: result.paidAt,
+              expiryBlock: locked.expiryBlock ?? observation.expiryBlock,
               lastReconciledBlock: observation.latestBlock,
               lastReconciledAt: now,
               updatedAt: now,

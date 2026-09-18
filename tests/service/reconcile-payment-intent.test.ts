@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AppError } from "@/lib/errors";
 import { newPaymentIntentId } from "@/lib/ids";
 import type { ChainTransfer } from "@/ports/chain-provider";
-import { PayerRequiredError, reconcilePaymentIntent } from "@/services/reconcile-payment-intent";
+import { reconcilePaymentIntent } from "@/services/reconcile-payment-intent";
 
 import { FakeChainProvider, InMemoryPaymentRepository, type FakeChainState } from "./fakes";
 
@@ -23,21 +23,35 @@ function chainTransfer(overrides: Partial<ChainTransfer> & { blockNumber: bigint
   };
 }
 
-async function setup(chain: FakeChainState, intentOverrides: { payerAddress?: string | null; expectedAmountUnits?: bigint; requiredConfirmations?: number } = {}) {
+interface SetupOptions {
+  payerAddress?: string | null;
+  expectedAmountUnits?: bigint;
+  requiredConfirmations?: number;
+  expiresAt?: Date;
+  /** Wall clock used by the service; defaults to well before the intent's expiry. */
+  now?: () => Date;
+}
+
+/** Fake chain time: block n is mined at n * 2 s after the epoch. */
+const blockTime = (blockNumber: bigint) => new Date(Number(blockNumber) * 2_000);
+
+async function setup(chain: FakeChainState, options: SetupOptions = {}) {
   const chainProvider = new FakeChainProvider(chain);
   const paymentRepository = new InMemoryPaymentRepository();
+  const expiresAt = options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
   const intent = await paymentRepository.createPaymentIntent({
     id: newPaymentIntentId(),
     externalReference: "INV-204",
-    expectedAmountUnits: intentOverrides.expectedAmountUnits ?? 25_000_000n,
+    expectedAmountUnits: options.expectedAmountUnits ?? 25_000_000n,
     recipientAddress: RECIPIENT,
-    payerAddress: intentOverrides.payerAddress === undefined ? PAYER : intentOverrides.payerAddress,
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-    requiredConfirmations: intentOverrides.requiredConfirmations ?? 3,
+    payerAddress: options.payerAddress === undefined ? PAYER : options.payerAddress,
+    expiresAt,
+    requiredConfirmations: options.requiredConfirmations ?? 3,
     startBlock: START_BLOCK,
   });
+  const now = options.now ?? (() => new Date(expiresAt.getTime() - 1_000));
   const reconcile = (requestId = "req_test") =>
-    reconcilePaymentIntent(intent.id, { chainProvider, paymentRepository, requestId });
+    reconcilePaymentIntent(intent.id, { chainProvider, paymentRepository, requestId, now });
   return { chainProvider, paymentRepository, intent, reconcile };
 }
 
@@ -106,7 +120,8 @@ describe("reconcilePaymentIntent — query window", () => {
       "2026-09-17T10:00:00.000Z",
       "2026-09-17T11:00:00.000Z",
     ]);
-    expect(outcome.intent.status).toBe("paid");
+    // 5 + 5 + 0.000001 + 15 = 25.000001 > 25: overpaid, crossing transfer is the block-1200 one.
+    expect(outcome.intent.status).toBe("overpaid");
     expect(outcome.intent.paidAt).toEqual(new Date("2026-09-17T11:00:00.000Z"));
   });
 });
@@ -251,15 +266,6 @@ describe("reconcilePaymentIntent — guards", () => {
     expect(chainProvider.calls).toBe(0);
   });
 
-  it("MILESTONE 2 LIMITATION: refuses payer-less intents deterministically without querying the chain", async () => {
-    const { chainProvider, reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, { payerAddress: null });
-    const error = await captureAppError(reconcile());
-    expect(error).toBeInstanceOf(PayerRequiredError);
-    expect(error.code).toBe("VALIDATION_ERROR");
-    expect(chainProvider.calls).toBe(0);
-    expect(chainProvider.transferQueries).toEqual([]);
-  });
-
   it("rejects a transfer the provider returns outside the payer/recipient filter", async () => {
     const chainProvider = new FakeChainProvider({ latestBlock: 1_100n, transfers: [] });
     chainProvider.getUsdcTransfers = async () => [chainTransfer({ blockNumber: 1_050n, amountUnits: 1n, from: OTHER })];
@@ -279,24 +285,306 @@ describe("reconcilePaymentIntent — guards", () => {
     expect(paymentRepository.evidenceRows(intent.id)).toHaveLength(0);
   });
 
-  it("MILESTONE 2 LIMITATION: reconciles through the latest block even after expiresAt (expiry arrives in Milestone 3)", async () => {
-    const chainProvider = new FakeChainProvider({
+});
+
+describe("reconcilePaymentIntent — window defence (§18)", () => {
+  it("rejects evidence before startBlock or after the window end from a faulty provider, without touching state", async () => {
+    for (const blockNumber of [START_BLOCK - 1n, 1_101n]) {
+      const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_100n, transfers: [] });
+      chainProvider.getUsdcTransfers = async () => [chainTransfer({ blockNumber, amountUnits: 25_000_000n })];
+      const error = await captureAppError(reconcile());
+      expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+      expect(error.context).toMatchObject({ outsideWindow: true });
+      const after = await paymentRepository.getPaymentIntentById(intent.id);
+      expect(after?.status).toBe("pending");
+      expect(after?.lastReconciledBlock).toBeNull();
+      expect(paymentRepository.evidenceRows(intent.id)).toHaveLength(0);
+    }
+  });
+
+  it("an API-shaped intent (startBlock = latest + 1) is never satisfied by a transfer mined before it", async () => {
+    // The transfer exists on the fake chain one block before the intent's window opens.
+    const { reconcile, paymentRepository, intent, chainProvider } = await setup({
+      latestBlock: 1_100n,
+      transfers: [chainTransfer({ blockNumber: START_BLOCK - 1n, amountUnits: 25_000_000n })],
+    });
+    const outcome = await reconcile();
+    expect(chainProvider.transferQueries[0]?.fromBlock).toBe(START_BLOCK);
+    expect(outcome.intent.status).toBe("pending");
+    expect(outcome.intent.paidAt).toBeNull();
+    expect(paymentRepository.evidenceRows(intent.id)).toHaveLength(0);
+  });
+});
+
+describe("reconcilePaymentIntent — final statuses", () => {
+  it("confirmed below expected → partial with remaining amount", async () => {
+    const { reconcile } = await setup({ latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 15_000_000n })] });
+    const outcome = await reconcile();
+    expect(outcome.intent).toMatchObject({ status: "partial", receivedAmountUnits: 15_000_000n, detectedAmountUnits: 15_000_000n, paidAt: null });
+  });
+
+  it("confirmed above expected → overpaid, paidAt from the crossing transfer", async () => {
+    const { reconcile } = await setup({
+      latestBlock: 1_100n,
+      transfers: [chainTransfer({ blockNumber: 1_010n, amountUnits: 25_000_000n }), chainTransfer({ blockNumber: 1_020n, amountUnits: 5_000_000n })],
+    });
+    const outcome = await reconcile();
+    expect(outcome.intent).toMatchObject({ status: "overpaid", receivedAmountUnits: 30_000_000n, paidAt: blockTime(1_010n) });
+  });
+});
+
+describe("reconcilePaymentIntent — expiry boundary", () => {
+  // Chain time: block n at n*2s. Intent window starts at block 1000 (t=2000s).
+  const expiresAt = blockTime(1_050n); // exactly block 1050's timestamp
+  const afterExpiry = () => new Date(expiresAt.getTime() + 60_000);
+
+  it("before expiresAt the window runs to the latest block and no search happens", async () => {
+    const { chainProvider, reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, { expiresAt, now: () => new Date(expiresAt.getTime() - 1) });
+    await reconcile();
+    expect(chainProvider.searchRequests).toEqual([]);
+    expect(chainProvider.transferQueries[0]).toMatchObject({ fromBlock: START_BLOCK, toBlock: 1_100n });
+  });
+
+  it("after expiresAt resolves and persists the expiry block (timestamp == expiresAt → that block is included)", async () => {
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_100n, transfers: [] }, { expiresAt, now: afterExpiry });
+    const outcome = await reconcile();
+    expect(chainProvider.searchRequests).toEqual([{ at: expiresAt, range: { fromBlock: START_BLOCK, toBlock: 1_100n } }]);
+    expect(chainProvider.transferQueries[0]).toMatchObject({ fromBlock: START_BLOCK, toBlock: 1_050n });
+    expect(outcome.intent.expiryBlock).toBe(1_050n);
+    expect(outcome.intent.status).toBe("expired");
+    expect((await paymentRepository.getPaymentIntentById(intent.id))?.expiryBlock).toBe(1_050n);
+    expect(paymentRepository.attempts[0]).toMatchObject({ fromBlock: START_BLOCK, toBlock: 1_050n, latestBlock: 1_100n, resultStatus: "expired" });
+  });
+
+  it("expiry between two block timestamps → the earlier block is the boundary", async () => {
+    const between = new Date(blockTime(1_050n).getTime() + 1_000);
+    const { reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, { expiresAt: between, now: () => new Date(between.getTime() + 60_000) });
+    expect((await reconcile()).intent.expiryBlock).toBe(1_050n);
+  });
+
+  it("a persisted expiryBlock is reused without repeating the search", async () => {
+    const { chainProvider, reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, { expiresAt, now: afterExpiry });
+    await reconcile("req_1");
+    chainProvider.state.latestBlock = 1_200n;
+    await reconcile("req_2");
+    expect(chainProvider.searchRequests).toHaveLength(1);
+    expect(chainProvider.transferQueries[1]).toMatchObject({ fromBlock: START_BLOCK, toBlock: 1_050n });
+  });
+
+  it("a transfer one block after the expiry block is excluded; one at the expiry block is eligible", async () => {
+    const excluded = await setup({ latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_051n, amountUnits: 25_000_000n })] }, { expiresAt, now: afterExpiry });
+    const first = await excluded.reconcile();
+    expect(first.intent.status).toBe("expired");
+    expect(first.candidateCount).toBe(0);
+
+    const eligible = await setup({ latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n })] }, { expiresAt, now: afterExpiry });
+    const second = await eligible.reconcile();
+    expect(second.intent.status).toBe("paid");
+    expect(second.intent.paidAt).toEqual(blockTime(1_050n));
+  });
+
+  it("expiry before the start block's timestamp → empty window, expired, persisted as startBlock - 1", async () => {
+    const early = blockTime(START_BLOCK - 5n);
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup(
+      { latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_001n, amountUnits: 25_000_000n })] },
+      { expiresAt: early, now: () => new Date(early.getTime() + 60_000) },
+    );
+    const outcome = await reconcile();
+    expect(chainProvider.transferQueries).toEqual([]); // no invalid log range is ever requested
+    expect(outcome.intent.status).toBe("expired");
+    expect(outcome.intent.expiryBlock).toBe(START_BLOCK - 1n);
+    expect((await paymentRepository.getPaymentIntentById(intent.id))?.expiryBlock).toBe(START_BLOCK - 1n);
+  });
+
+  it("wall clock past expiry but the latest block not yet past it → window to latest, nothing persisted, not expired", async () => {
+    // latest block 1040 is mined at t=2080s, before expiresAt (t=2100s); the boundary is not on chain yet.
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_040n, transfers: [] }, { expiresAt, now: afterExpiry });
+    const outcome = await reconcile();
+    expect(chainProvider.searchRequests).toHaveLength(1);
+    expect(chainProvider.transferQueries[0]).toMatchObject({ toBlock: 1_040n });
+    expect(outcome.intent.status).toBe("pending");
+    expect((await paymentRepository.getPaymentIntentById(intent.id))?.expiryBlock).toBeNull();
+  });
+
+  it("payment mined before expiry but confirmed after expiry → paid", async () => {
+    // Mined in block 1050 (the boundary). At block 1051 it has 2 confirmations → detected; at 1053 → paid.
+    const { chainProvider, reconcile } = await setup(
+      { latestBlock: 1_051n, transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n })] },
+      { expiresAt, now: afterExpiry },
+    );
+    const detected = await reconcile("req_1");
+    expect(detected.intent.status).toBe("detected");
+    expect(detected.intent.expiryBlock).toBe(1_050n);
+
+    chainProvider.state.latestBlock = 1_053n;
+    const paid = await reconcile("req_2");
+    expect(paid.intent.status).toBe("paid");
+    expect(paid.intent.paidAt).toEqual(blockTime(1_050n));
+  });
+
+  it("partial at expiry with an under-confirmed pre-expiry transfer that can satisfy the balance stays partial, then pays", async () => {
+    const { chainProvider, reconcile } = await setup(
+      {
+        latestBlock: 1_051n,
+        transfers: [chainTransfer({ blockNumber: 1_010n, amountUnits: 15_000_000n }), chainTransfer({ blockNumber: 1_050n, amountUnits: 10_000_000n })],
+      },
+      { expiresAt, now: afterExpiry },
+    );
+    expect((await reconcile("req_1")).intent.status).toBe("partial");
+    chainProvider.state.latestBlock = 1_060n;
+    const paid = await reconcile("req_2");
+    expect(paid.intent.status).toBe("paid");
+    expect(paid.intent.paidAt).toEqual(blockTime(1_050n));
+  });
+
+  it("partial at expiry with nothing pending → expired, amounts retained", async () => {
+    const { reconcile } = await setup(
+      { latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_010n, amountUnits: 15_000_000n })] },
+      { expiresAt, now: afterExpiry },
+    );
+    const outcome = await reconcile();
+    expect(outcome.intent).toMatchObject({ status: "expired", receivedAmountUnits: 15_000_000n, paidAt: null });
+  });
+});
+
+describe("reconcilePaymentIntent — payer-less intents", () => {
+  const noPayer = { payerAddress: null } as const;
+
+  it("queries the recipient without a sender filter", async () => {
+    const { chainProvider, reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, noPayer);
+    await reconcile();
+    expect(chainProvider.transferQueries).toEqual([{ fromBlock: START_BLOCK, toBlock: 1_100n, recipient: RECIPIENT, payer: null }]);
+  });
+
+  it("no sender → pending", async () => {
+    const { reconcile } = await setup({ latestBlock: 1_100n, transfers: [] }, noPayer);
+    expect((await reconcile()).intent).toMatchObject({ status: "pending", matchConfidence: "none" });
+  });
+
+  it("one sender → single_sender and normal aggregation", async () => {
+    const { reconcile, paymentRepository, intent } = await setup(
+      { latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_010n, amountUnits: 10_000_000n, from: OTHER }), chainTransfer({ blockNumber: 1_020n, amountUnits: 15_000_000n, from: OTHER })] },
+      noPayer,
+    );
+    const outcome = await reconcile();
+    expect(outcome.intent).toMatchObject({ status: "paid", matchConfidence: "single_sender", receivedAmountUnits: 25_000_000n, paidAt: blockTime(1_020n) });
+    expect(paymentRepository.evidenceRows(intent.id).every((row) => row.association === "matched")).toBe(true);
+  });
+
+  it("two senders → ambiguous; evidence stored as candidates; totals untouched", async () => {
+    const { reconcile, paymentRepository, intent } = await setup(
+      { latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_010n, amountUnits: 25_000_000n, from: OTHER }), chainTransfer({ blockNumber: 1_020n, amountUnits: 1n, from: PAYER })] },
+      noPayer,
+    );
+    const outcome = await reconcile();
+    expect(outcome.intent).toMatchObject({ status: "ambiguous", matchConfidence: "ambiguous", receivedAmountUnits: 0n, detectedAmountUnits: 0n, paidAt: null });
+    const rows = paymentRepository.evidenceRows(intent.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.association === "candidate")).toBe(true);
+  });
+});
+
+describe("reconcilePaymentIntent — canonical evidence and reorgs", () => {
+  it("A: a transfer that disappears from a later complete scan is orphaned and the state regresses", async () => {
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({
       latestBlock: 1_100n,
       transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n })],
     });
-    const paymentRepository = new InMemoryPaymentRepository();
-    const intent = await paymentRepository.createPaymentIntent({
-      id: newPaymentIntentId(),
-      externalReference: null,
-      expectedAmountUnits: 25_000_000n,
-      recipientAddress: RECIPIENT,
-      payerAddress: PAYER,
-      expiresAt: new Date(Date.now() - 60_000),
-      requiredConfirmations: 3,
-      startBlock: START_BLOCK,
-    });
-    const outcome = await reconcilePaymentIntent(intent.id, { chainProvider, paymentRepository, requestId: "r" });
+    expect((await reconcile("req_1")).intent.status).toBe("paid");
+
+    chainProvider.state.transfers = [];
+    chainProvider.state.latestBlock = 1_101n;
+    const outcome = await reconcile("req_2");
+    expect(outcome.intent).toMatchObject({ status: "pending", receivedAmountUnits: 0n, detectedAmountUnits: 0n, matchConfidence: "none", paidAt: null });
+    const rows = paymentRepository.evidenceRows(intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.association).toBe("orphaned");
+  });
+
+  it("A′: an orphaned identity seen canonically again returns to matched and counts again", async () => {
+    const transfer = chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n });
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_100n, transfers: [transfer] });
+    await reconcile("req_1");
+    chainProvider.state.transfers = [];
+    chainProvider.state.latestBlock = 1_101n;
+    expect((await reconcile("req_2")).intent.status).toBe("pending");
+    chainProvider.state.transfers = [transfer];
+    chainProvider.state.latestBlock = 1_102n;
+    const outcome = await reconcile("req_3");
     expect(outcome.intent.status).toBe("paid");
-    expect(chainProvider.transferQueries[0]?.toBlock).toBe(1_100n);
+    expect(paymentRepository.evidenceRows(intent.id)).toEqual([expect.objectContaining({ association: "matched", confirmations: 53 })]);
+  });
+
+  it("B: the same identity re-observed in a different canonical block updates the stored block details", async () => {
+    const transfer = chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n, blockHash: `0x${"1".repeat(64)}` });
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_100n, transfers: [transfer] });
+    await reconcile("req_1");
+    chainProvider.state.transfers = [{ ...transfer, blockNumber: 1_052n, blockHash: `0x${"2".repeat(64)}` }];
+    chainProvider.state.latestBlock = 1_101n;
+    await reconcile("req_2");
+    const rows = paymentRepository.evidenceRows(intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ blockNumber: 1_052n, blockHash: `0x${"2".repeat(64)}`, association: "matched", confirmations: 50 });
+    expect(rows[0]?.blockTimestamp).toEqual(blockTime(1_052n));
+  });
+
+  it("C: ambiguous scan, then one sender disappears → candidate orphaned, remaining sender becomes single_sender", async () => {
+    const a = chainTransfer({ blockNumber: 1_010n, amountUnits: 25_000_000n, from: OTHER });
+    const b = chainTransfer({ blockNumber: 1_020n, amountUnits: 1n, from: PAYER });
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({ latestBlock: 1_100n, transfers: [a, b] }, { payerAddress: null });
+    expect((await reconcile("req_1")).intent.status).toBe("ambiguous");
+
+    chainProvider.state.transfers = [a];
+    chainProvider.state.latestBlock = 1_101n;
+    const outcome = await reconcile("req_2");
+    expect(outcome.intent).toMatchObject({ status: "paid", matchConfidence: "single_sender", receivedAmountUnits: 25_000_000n });
+    const rows = paymentRepository.evidenceRows(intent.id);
+    expect(rows.map((row) => [row.txHash, row.association])).toEqual([
+      [a.txHash, "matched"],
+      [b.txHash, "orphaned"],
+    ]);
+  });
+
+  it("D: a failed scan orphans nothing and leaves state unchanged", async () => {
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup({
+      latestBlock: 1_100n,
+      transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 25_000_000n })],
+    });
+    const before = await reconcile("req_1");
+    expect(before.intent.status).toBe("paid");
+
+    chainProvider.state.failTransfers = new AppError("UPSTREAM_UNAVAILABLE", "down");
+    chainProvider.state.transfers = [];
+    chainProvider.state.latestBlock = 1_200n;
+    await captureAppError(reconcile("req_2"));
+    expect(await paymentRepository.getPaymentIntentById(intent.id)).toEqual(before.intent);
+    expect(paymentRepository.evidenceRows(intent.id)).toEqual([expect.objectContaining({ association: "matched" })]);
+  });
+
+  it("does not orphan evidence outside the scanned window (expiry narrows the window)", async () => {
+    // Milestone-2-style row beyond the expiry boundary must stay untouched by a narrower scan.
+    const expiresAt = blockTime(1_050n);
+    const late = chainTransfer({ blockNumber: 1_060n, amountUnits: 25_000_000n });
+    const { chainProvider, reconcile, paymentRepository, intent } = await setup(
+      { latestBlock: 1_100n, transfers: [late] },
+      { expiresAt, now: () => new Date(expiresAt.getTime() - 1) },
+    );
+    // Simulate a pre-expiry full scan that legitimately included block 1060: the wall clock was before expiresAt.
+    // (On the fake chain block 1060 is after expiresAt, so this mirrors a lagging clock; the row exists either way.)
+    await reconcile("req_1");
+    expect(paymentRepository.evidenceRows(intent.id)[0]?.association).toBe("matched");
+
+    // Now the clock passes expiry: window becomes [1000, 1050]; the row at 1060 is outside it.
+    const repo2 = paymentRepository;
+    const later = reconcilePaymentIntent(intent.id, {
+      chainProvider,
+      paymentRepository: repo2,
+      requestId: "req_2",
+      now: () => new Date(expiresAt.getTime() + 60_000),
+    });
+    const outcome = await later;
+    expect(outcome.intent.status).toBe("expired");
+    expect(outcome.intent.receivedAmountUnits).toBe(0n);
+    expect(paymentRepository.evidenceRows(intent.id)[0]?.association).toBe("matched"); // outside window: untouched, uncounted
   });
 });

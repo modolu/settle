@@ -141,6 +141,7 @@ function logsClient(impl: (params: unknown) => Promise<unknown>) {
 }
 
 const query = { fromBlock: 1_000n, toBlock: 1_100n, recipient: RECIPIENT, payer: PAYER };
+const recipientOnly = { ...query, payer: null };
 
 describe("createAlchemyBaseProvider.getUsdcTransfers", () => {
   it("queries eth_getLogs for the native USDC Transfer event filtered by payer, recipient and block range", async () => {
@@ -161,6 +162,27 @@ describe("createAlchemyBaseProvider.getUsdcTransfers", () => {
     expect(transfers).toEqual([
       { txHash: TX, logIndex: 42, blockNumber: 1_050n, blockHash: BLOCK_HASH, from: PAYER, to: RECIPIENT, amountUnits: 25_000_000n },
     ]);
+  });
+
+  it("without a payer filters only by recipient at the RPC level and accepts any sender", async () => {
+    const { client, calls } = logsClient(async () => [
+      validLog(),
+      validLog({ args: { from: "0x1111111111111111111111111111111111111111", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: 5n }, logIndex: 43 }),
+    ]);
+    const transfers = await createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(recipientOnly);
+    expect(calls[0]).toMatchObject({ args: { to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }, fromBlock: 1_000n, toBlock: 1_100n, strict: true });
+    expect((calls[0] as { args: Record<string, unknown> }).args).not.toHaveProperty("from");
+    expect(transfers.map((t) => [t.from, t.amountUnits])).toEqual([
+      [PAYER, 25_000_000n],
+      ["0x1111111111111111111111111111111111111111", 5n],
+    ]);
+  });
+
+  it("without a payer still rejects a log whose recipient differs or whose sender is malformed", async () => {
+    const wrongTo = logsClient(async () => [validLog({ args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x1111111111111111111111111111111111111111", value: 1n } })]);
+    expect((await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client: wrongTo.client }).getUsdcTransfers(recipientOnly))).code).toBe("UPSTREAM_INVALID_RESPONSE");
+    const badFrom = logsClient(async () => [validLog({ args: { from: "0xnope", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: 1n } })]);
+    expect((await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client: badFrom.client }).getUsdcTransfers(recipientOnly))).code).toBe("UPSTREAM_INVALID_RESPONSE");
   });
 
   it("returns an empty array for no logs", async () => {
@@ -263,5 +285,36 @@ describe("createAlchemyBaseProvider.getBlockTimestamp", () => {
     expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
     expect(error.retryable).toBe(true);
     expect(error.context).toMatchObject({ operation: "getBlock" });
+  });
+});
+
+describe("createAlchemyBaseProvider.findLastBlockAtOrBefore", () => {
+  it("searches through getBlock reads and returns the boundary block", async () => {
+    const reads: bigint[] = [];
+    const client: BaseRpcClient = {
+      getBlockNumber: unused,
+      getLogs: unused,
+      getBlock: (async (params: { blockNumber: bigint }) => {
+        reads.push(params.blockNumber);
+        return { number: params.blockNumber, timestamp: params.blockNumber * 2n, hash: BLOCK_HASH };
+      }) as unknown as BaseRpcClient["getBlock"],
+    };
+    const provider = createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client });
+    await expect(provider.findLastBlockAtOrBefore(new Date(500 * 2_000 + 1_000), { fromBlock: 1n, toBlock: 1_000n })).resolves.toBe(500n);
+    expect(reads.length).toBeLessThanOrEqual(12);
+    await expect(provider.findLastBlockAtOrBefore(new Date(0), { fromBlock: 1n, toBlock: 1_000n })).resolves.toBeNull();
+  });
+
+  it("propagates a block-read failure as a retryable upstream error", async () => {
+    const client: BaseRpcClient = {
+      getBlockNumber: unused,
+      getLogs: unused,
+      getBlock: (async () => {
+        throw new TimeoutError({ body: { method: "eth_getBlockByNumber" }, url: SECRET_URL });
+      }) as unknown as BaseRpcClient["getBlock"],
+    };
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).findLastBlockAtOrBefore(new Date(), { fromBlock: 1n, toBlock: 10n }));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(JSON.stringify(error.context)).not.toContain("super-secret");
   });
 });
