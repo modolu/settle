@@ -9,15 +9,24 @@
  */
 import "server-only";
 
-import { BaseError, createPublicClient, http, type PublicClient } from "viem";
+import {
+  BaseError,
+  InvalidParamsRpcError,
+  LimitExceededRpcError,
+  createPublicClient,
+  getAddress,
+  http,
+  isAddress,
+  type PublicClient,
+} from "viem";
 
 import { AppError } from "@/lib/errors";
-import type { ChainProvider } from "@/ports/chain-provider";
+import type { ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
 
-import { BASE_CHAIN } from "./base-usdc";
+import { BASE_CHAIN, ERC20_TRANSFER_EVENT_ABI, USDC_CONTRACT_ADDRESS } from "./base-usdc";
 
 /** The subset of a viem public client the provider uses; injectable for tests. */
-export type BaseRpcClient = Pick<PublicClient, "getBlockNumber">;
+export type BaseRpcClient = Pick<PublicClient, "getBlockNumber" | "getLogs" | "getBlock">;
 
 export interface AlchemyBaseProviderOptions {
   readonly rpcUrl: string;
@@ -28,6 +37,9 @@ export interface AlchemyBaseProviderOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const TRANSFER_EVENT = ERC20_TRANSFER_EVENT_ABI[0];
+const USDC_CONTRACT_LOWERCASE = USDC_CONTRACT_ADDRESS.toLowerCase();
+const HASH_32 = /^0x[0-9a-f]{64}$/;
 
 /** Summary of a provider failure that is safe to log: never includes the URL or payloads. */
 export interface RedactedProviderError {
@@ -57,6 +69,91 @@ export function redactProviderError(error: unknown): RedactedProviderError {
   return { name: "UnknownError", shortMessage: "Non-error value thrown" };
 }
 
+/**
+ * Maps a thrown provider error to the stable upstream error. Explicit
+ * range/response-size rejections (Alchemy answers those with -32602 or
+ * -32005) are still `UPSTREAM_UNAVAILABLE` but flagged non-retryable, since
+ * repeating the same query cannot succeed; nothing is ever truncated to fit.
+ */
+function toUpstreamError(operation: string, error: unknown): AppError {
+  const providerError = redactProviderError(error);
+  const isQueryLimit = error instanceof LimitExceededRpcError || error instanceof InvalidParamsRpcError;
+  return new AppError(
+    "UPSTREAM_UNAVAILABLE",
+    isQueryLimit
+      ? "Blockchain provider could not serve the requested block range"
+      : "Blockchain provider is temporarily unavailable",
+    {
+      retryable: !isQueryLimit,
+      context: { provider: "alchemy", operation, providerError },
+    },
+  );
+}
+
+function invalidResponse(operation: string, reason: string): AppError {
+  return new AppError("UPSTREAM_INVALID_RESPONSE", "Blockchain provider returned an invalid response", {
+    context: { provider: "alchemy", operation, reason },
+  });
+}
+
+/**
+ * Converts one decoded viem log into a `ChainTransfer`, verifying every field
+ * the reconciliation engine relies on. The RPC filter already constrains
+ * contract, `from` and `to`; this re-checks them so a misbehaving node can
+ * never inject evidence.
+ */
+function toChainTransfer(log: unknown, query: UsdcTransferQuery): ChainTransfer {
+  if (typeof log !== "object" || log === null) {
+    throw invalidResponse("getLogs", "log is not an object");
+  }
+  const candidate = log as {
+    address?: unknown;
+    args?: unknown;
+    blockNumber?: unknown;
+    blockHash?: unknown;
+    transactionHash?: unknown;
+    logIndex?: unknown;
+    removed?: unknown;
+  };
+  if (typeof candidate.address !== "string" || candidate.address.toLowerCase() !== USDC_CONTRACT_LOWERCASE) {
+    throw invalidResponse("getLogs", "log emitted by an unexpected contract");
+  }
+  if (candidate.removed === true) {
+    throw invalidResponse("getLogs", "log marked removed");
+  }
+  const args = (candidate.args ?? {}) as { from?: unknown; to?: unknown; value?: unknown };
+  if (typeof args.from !== "string" || !isAddress(args.from) || args.from.toLowerCase() !== query.payer) {
+    throw invalidResponse("getLogs", "log sender does not match the payer filter");
+  }
+  if (typeof args.to !== "string" || !isAddress(args.to) || args.to.toLowerCase() !== query.recipient) {
+    throw invalidResponse("getLogs", "log recipient does not match the recipient filter");
+  }
+  if (typeof args.value !== "bigint" || args.value < 0n) {
+    throw invalidResponse("getLogs", "log value is not a non-negative integer");
+  }
+  if (typeof candidate.blockNumber !== "bigint" || candidate.blockNumber < query.fromBlock || candidate.blockNumber > query.toBlock) {
+    throw invalidResponse("getLogs", "log block number outside the requested range");
+  }
+  if (typeof candidate.blockHash !== "string" || !HASH_32.test(candidate.blockHash.toLowerCase())) {
+    throw invalidResponse("getLogs", "log block hash malformed");
+  }
+  if (typeof candidate.transactionHash !== "string" || !HASH_32.test(candidate.transactionHash.toLowerCase())) {
+    throw invalidResponse("getLogs", "log transaction hash malformed");
+  }
+  if (typeof candidate.logIndex !== "number" || !Number.isInteger(candidate.logIndex) || candidate.logIndex < 0) {
+    throw invalidResponse("getLogs", "log index malformed");
+  }
+  return {
+    txHash: candidate.transactionHash.toLowerCase(),
+    logIndex: candidate.logIndex,
+    blockNumber: candidate.blockNumber,
+    blockHash: candidate.blockHash.toLowerCase(),
+    from: args.from.toLowerCase(),
+    to: args.to.toLowerCase(),
+    amountUnits: args.value,
+  };
+}
+
 export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): ChainProvider {
   const client: BaseRpcClient =
     options.client ??
@@ -76,16 +173,55 @@ export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): 
       try {
         result = await client.getBlockNumber({ cacheTime: 0 });
       } catch (error) {
-        throw new AppError("UPSTREAM_UNAVAILABLE", "Blockchain provider is temporarily unavailable", {
-          context: { provider: "alchemy", providerError: redactProviderError(error) },
-        });
+        throw toUpstreamError("getBlockNumber", error);
       }
       if (typeof result !== "bigint" || result < 0n) {
-        throw new AppError("UPSTREAM_INVALID_RESPONSE", "Blockchain provider returned an invalid block number", {
-          context: { provider: "alchemy", resultType: typeof result },
-        });
+        throw invalidResponse("getBlockNumber", `block number is ${typeof result}`);
       }
       return result;
+    },
+
+    async getUsdcTransfers(query: UsdcTransferQuery): Promise<ChainTransfer[]> {
+      if (query.fromBlock > query.toBlock || query.fromBlock < 0n) {
+        throw new Error(`invalid block range ${query.fromBlock}..${query.toBlock}`);
+      }
+      let logs: unknown;
+      try {
+        // eth_getLogs filtered server-side by contract, event signature and both indexed
+        // parameters (topics[1] = from, topics[2] = to), exactly one block range, no truncation.
+        logs = await client.getLogs({
+          address: USDC_CONTRACT_ADDRESS,
+          event: TRANSFER_EVENT,
+          args: { from: getAddress(query.payer), to: getAddress(query.recipient) },
+          fromBlock: query.fromBlock,
+          toBlock: query.toBlock,
+          strict: true,
+        });
+      } catch (error) {
+        throw toUpstreamError("getLogs", error);
+      }
+      if (!Array.isArray(logs)) {
+        throw invalidResponse("getLogs", "result is not an array");
+      }
+      return logs.map((log) => toChainTransfer(log, query));
+    },
+
+    async getBlockTimestamp(blockNumber: bigint): Promise<Date> {
+      let block: unknown;
+      try {
+        block = await client.getBlock({ blockNumber, includeTransactions: false });
+      } catch (error) {
+        throw toUpstreamError("getBlock", error);
+      }
+      const header = (block ?? {}) as { number?: unknown; timestamp?: unknown };
+      if (header.number !== blockNumber) {
+        throw invalidResponse("getBlock", "block number does not match the request");
+      }
+      if (typeof header.timestamp !== "bigint" || header.timestamp <= 0n || header.timestamp > 253_402_300_799n) {
+        throw invalidResponse("getBlock", "block timestamp malformed");
+      }
+      // Seconds since epoch fit a JavaScript number exactly up to year 9999.
+      return new Date(Number(header.timestamp) * 1000);
     },
   };
 }

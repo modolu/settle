@@ -12,10 +12,12 @@ plus transaction evidence.
 
 ## Status
 
-Milestone 1 — persistence and the create/read vertical slice. Payment intents
-can be created (with a Base start block read through the chain provider) and
-read back. Reconciliation, evidence and the demo UI arrive in later
-milestones (see `ARCHITECTURE.md` §17).
+Milestone 2 — exact-payer reconciliation. Intents created with a `payer` can
+be reconciled against canonical native Base USDC `Transfer` logs and move
+between `pending`, `detected` and `paid`, with paginated transaction evidence.
+Still to come (see `ARCHITECTURE.md` §17): `partial`/`overpaid`/`expired`,
+expiry-block resolution, payer-less matching and `ambiguous`, reorg handling
+(Milestone 3), and the demo UI (Milestone 4).
 
 ## Stack
 
@@ -120,6 +122,79 @@ Returns the persisted state in the same shape (`200`), `404 INTENT_NOT_FOUND`
 for an unknown ID, or `400 VALIDATION_ERROR` for a malformed one. No chain
 access happens on read; reconciliation is a separate, caller-triggered step
 (later milestone).
+
+### `POST /v1/payment-intents/:id/reconcile`
+
+Caller-triggered reconciliation. Settle reads the latest Base block, fetches
+native USDC `Transfer` logs from `payer` to `recipient` in
+`[startBlock, latestBlock]`, computes confirmation depth
+(`latest − block + 1`), persists the evidence idempotently and returns the
+updated intent:
+
+```sh
+curl -i -X POST https://<deployment>/v1/payment-intents/pi_.../reconcile
+```
+
+```json
+{
+  "id": "pi_...",
+  "status": "paid",
+  "externalReference": "INV-204",
+  "chain": "base",
+  "asset": "USDC",
+  "expectedAmount": "25.00",
+  "receivedAmount": "25.00",
+  "remainingAmount": "0.00",
+  "recipient": "0x...",
+  "payer": "0x...",
+  "requiredConfirmations": 3,
+  "matchConfidence": "exact_payer",
+  "paidAt": "2026-09-17T22:43:17.000Z",
+  "createdAt": "...",
+  "expiresAt": "..."
+}
+```
+
+Statuses in this milestone: `pending` (no evidence), `detected` (evidence
+exists but the confirmed total does not yet meet the obligation), `paid`
+(confirmed total ≥ expected). `paidAt` is the block timestamp of the transfer
+that first brought the confirmed total to the expected amount. Repeated calls
+never double-count: evidence is keyed by `(intent, txHash, logIndex)` and
+amounts are recomputed from the full window on every call. If the provider
+fails the response is `503 UPSTREAM_UNAVAILABLE` and nothing changes.
+Milestone 2 accepts only intents with a declared `payer`; a payer-less intent
+gets `400 VALIDATION_ERROR` until Milestone 3.
+
+### `GET /v1/payment-intents/:id/evidence`
+
+Persisted evidence in canonical order `(blockNumber, logIndex, txHash)`,
+keyset-paginated (`limit` 1–100, default 50; opaque `cursor`):
+
+```sh
+curl "https://<deployment>/v1/payment-intents/pi_.../evidence?limit=50"
+```
+
+```json
+{
+  "evidence": [
+    {
+      "transactionHash": "0x7db45d69dbb848f50002285f04946b2004388f6823d6ecd3387276141561b0f5",
+      "logIndex": 4,
+      "blockNumber": "51447828",
+      "from": "0x498581fF718922c3f8e6A244956aF099B2652b2b",
+      "to": "0x03468a6A40940E4C54d8b9D8433F7aBf0481A2Bc",
+      "amount": "20710.876899",
+      "confirmations": 25,
+      "blockTimestamp": "2026-09-17T22:43:23.000Z",
+      "association": "matched"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+`blockNumber` is a decimal string; `confirmations` are as observed at the last
+accepted reconciliation.
 
 ### `GET /health`
 

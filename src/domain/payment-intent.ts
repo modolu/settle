@@ -77,6 +77,23 @@ export interface NewPaymentIntent extends CreatePaymentIntentInput {
   readonly startBlock: bigint;
 }
 
+/** Persisted chain evidence for an intent (`matched_transfers`, ARCHITECTURE.md §4.2). */
+export interface MatchedTransfer {
+  readonly txHash: string;
+  readonly logIndex: number;
+  readonly blockNumber: bigint;
+  readonly blockHash: string;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  readonly amountUnits: bigint;
+  readonly blockTimestamp: Date;
+  readonly association: TransferAssociation;
+  /** Depth observed at the last reconciliation that saw this transfer; cached evidence only. */
+  readonly confirmations: number;
+  readonly firstSeenAt: Date;
+  readonly lastSeenAt: Date;
+}
+
 export interface PaymentIntentViolation {
   readonly field: "amount" | "requiredConfirmations" | "expiresAt";
   readonly message: string;

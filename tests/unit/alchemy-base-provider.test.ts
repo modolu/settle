@@ -6,8 +6,12 @@ import { AppError } from "@/lib/errors";
 
 const SECRET_URL = "https://base-mainnet.g.alchemy.com/v2/super-secret-api-key";
 
+const unused = async (): Promise<never> => {
+  throw new Error("not expected in this test");
+};
+
 function clientReturning(value: unknown): BaseRpcClient {
-  return { getBlockNumber: async () => value as bigint };
+  return { getBlockNumber: async () => value as bigint, getLogs: unused, getBlock: unused };
 }
 
 function clientThrowing(error: unknown): BaseRpcClient {
@@ -15,6 +19,8 @@ function clientThrowing(error: unknown): BaseRpcClient {
     getBlockNumber: async () => {
       throw error;
     },
+    getLogs: unused,
+    getBlock: unused,
   };
 }
 
@@ -52,6 +58,7 @@ describe("createAlchemyBaseProvider", () => {
     expect(error.cause).toBeUndefined();
     expect(error.context).toEqual({
       provider: "alchemy",
+      operation: "getBlockNumber",
       providerError: { name: "HttpRequestError", shortMessage: "HTTP request failed.", status: 429 },
     });
     expect(JSON.stringify({ message: error.message, context: error.context, stack: error.stack })).not.toContain(
@@ -76,6 +83,7 @@ describe("createAlchemyBaseProvider", () => {
     expect(fromSocket.code).toBe("UPSTREAM_UNAVAILABLE");
     expect(fromSocket.context).toEqual({
       provider: "alchemy",
+      operation: "getBlockNumber",
       providerError: { name: "Error", shortMessage: "Non-RPC error" },
     });
   });
@@ -91,5 +99,169 @@ describe("createAlchemyBaseProvider", () => {
 
   it("redacts unknown thrown values", () => {
     expect(redactProviderError("boom")).toEqual({ name: "UnknownError", shortMessage: "Non-error value thrown" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone 2: transfer log queries and block timestamps
+// ---------------------------------------------------------------------------
+import { InvalidParamsRpcError, LimitExceededRpcError, RpcRequestError } from "viem";
+
+import { USDC_CONTRACT_ADDRESS } from "@/integrations/chain/base-usdc";
+
+const PAYER = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
+const RECIPIENT = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const TX = `0x${"c".repeat(64)}`;
+const BLOCK_HASH = `0x${"d".repeat(64)}`;
+
+function validLog(overrides: Record<string, unknown> = {}) {
+  return {
+    address: USDC_CONTRACT_ADDRESS,
+    args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: 25_000_000n },
+    blockNumber: 1_050n,
+    blockHash: BLOCK_HASH,
+    transactionHash: TX,
+    logIndex: 42,
+    removed: false,
+    ...overrides,
+  };
+}
+
+function logsClient(impl: (params: unknown) => Promise<unknown>) {
+  const calls: unknown[] = [];
+  const client: BaseRpcClient = {
+    getBlockNumber: unused,
+    getBlock: unused,
+    getLogs: (async (params: unknown) => {
+      calls.push(params);
+      return impl(params);
+    }) as unknown as BaseRpcClient["getLogs"],
+  };
+  return { client, calls };
+}
+
+const query = { fromBlock: 1_000n, toBlock: 1_100n, recipient: RECIPIENT, payer: PAYER };
+
+describe("createAlchemyBaseProvider.getUsdcTransfers", () => {
+  it("queries eth_getLogs for the native USDC Transfer event filtered by payer, recipient and block range", async () => {
+    const { client, calls } = logsClient(async () => [validLog()]);
+    const provider = createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client });
+
+    const transfers = await provider.getUsdcTransfers(query);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      event: { type: "event", name: "Transfer" },
+      args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+      fromBlock: 1_000n,
+      toBlock: 1_100n,
+      strict: true,
+    });
+    expect(transfers).toEqual([
+      { txHash: TX, logIndex: 42, blockNumber: 1_050n, blockHash: BLOCK_HASH, from: PAYER, to: RECIPIENT, amountUnits: 25_000_000n },
+    ]);
+  });
+
+  it("returns an empty array for no logs", async () => {
+    const { client } = logsClient(async () => []);
+    await expect(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query)).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["wrong contract", { address: "0x1111111111111111111111111111111111111111" }],
+    ["wrong sender", { args: { from: "0x1111111111111111111111111111111111111111", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: 1n } }],
+    ["wrong recipient", { args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x1111111111111111111111111111111111111111", value: 1n } }],
+    ["negative value", { args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: -1n } }],
+    ["number value", { args: { from: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", value: 1 } }],
+    ["block out of range", { blockNumber: 1_101n }],
+    ["pending block", { blockNumber: null }],
+    ["removed log", { removed: true }],
+    ["bad block hash", { blockHash: "0x1234" }],
+    ["bad tx hash", { transactionHash: "0x1234" }],
+    ["bad log index", { logIndex: -1 }],
+  ])("rejects a log with %s as UPSTREAM_INVALID_RESPONSE", async (_label, overrides) => {
+    const { client } = logsClient(async () => [validLog(overrides)]);
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query));
+    expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+    expect(error.retryable).toBe(false);
+  });
+
+  it("treats a log-query failure as a retryable upstream error, never as zero transfers", async () => {
+    const { client } = logsClient(async () => {
+      throw new HttpRequestError({ url: SECRET_URL, status: 503, body: { method: "eth_getLogs" } });
+    });
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(error.retryable).toBe(true);
+    expect(error.context).toMatchObject({ operation: "getLogs" });
+    expect(JSON.stringify({ message: error.message, context: error.context })).not.toContain("super-secret");
+  });
+
+  it.each([
+    ["LimitExceededRpcError", (cause: RpcRequestError) => new LimitExceededRpcError(cause), -32005],
+    ["InvalidParamsRpcError", (cause: RpcRequestError) => new InvalidParamsRpcError(cause), -32602],
+  ])("maps an explicit %s (range/response limit) to a non-retryable UPSTREAM_UNAVAILABLE without truncating", async (_name, build, code) => {
+    const cause = new RpcRequestError({
+      body: { method: "eth_getLogs" },
+      error: { code, message: `Log response size exceeded. ${SECRET_URL}` },
+      url: SECRET_URL,
+    });
+    const { client, calls } = logsClient(async () => {
+      throw build(cause);
+    });
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(error.retryable).toBe(false);
+    expect(error.message).toBe("Blockchain provider could not serve the requested block range");
+    expect(error.context).toMatchObject({ providerError: { rpcCode: code } });
+    expect(JSON.stringify(error.context)).not.toContain("super-secret");
+    expect(calls).toHaveLength(1); // no retry, no chunking
+  });
+
+  it("refuses an inverted block range before calling the provider", async () => {
+    const { client, calls } = logsClient(async () => []);
+    await expect(
+      createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers({ ...query, fromBlock: 1_101n }),
+    ).rejects.toThrow(/invalid block range/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createAlchemyBaseProvider.getBlockTimestamp", () => {
+  function blockClient(impl: (params: unknown) => Promise<unknown>): BaseRpcClient {
+    return { getBlockNumber: unused, getLogs: unused, getBlock: impl as unknown as BaseRpcClient["getBlock"] };
+  }
+
+  it("returns the block timestamp as a Date from the bigint seconds value", async () => {
+    const client = blockClient(async (params) => {
+      expect(params).toEqual({ blockNumber: 1_050n, includeTransactions: false });
+      return { number: 1_050n, timestamp: 1_789_685_400n, hash: BLOCK_HASH };
+    });
+    await expect(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getBlockTimestamp(1_050n)).resolves.toEqual(
+      new Date("2026-09-17T22:50:00.000Z"),
+    );
+  });
+
+  it.each([
+    ["mismatched number", { number: 1_051n, timestamp: 1_789_685_400n }],
+    ["missing timestamp", { number: 1_050n }],
+    ["number timestamp", { number: 1_050n, timestamp: 1_789_685_400 }],
+    ["zero timestamp", { number: 1_050n, timestamp: 0n }],
+    ["null block", null],
+  ])("rejects %s as UPSTREAM_INVALID_RESPONSE", async (_label, block) => {
+    const client = blockClient(async () => block);
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getBlockTimestamp(1_050n));
+    expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("maps a block fetch failure to a retryable upstream error", async () => {
+    const client = blockClient(async () => {
+      throw new TimeoutError({ body: { method: "eth_getBlockByNumber" }, url: SECRET_URL });
+    });
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getBlockTimestamp(1_050n));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(error.retryable).toBe(true);
+    expect(error.context).toMatchObject({ operation: "getBlock" });
   });
 });

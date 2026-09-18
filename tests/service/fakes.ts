@@ -2,26 +2,88 @@
  * In-memory fakes for the port interfaces (ARCHITECTURE.md §13 "Required
  * service tests"). Services are tested only through their entry points.
  */
-import { ASSET, CHAIN, USDC_TOKEN_ADDRESS, type NewPaymentIntent, type PaymentIntent } from "@/domain/payment-intent";
-import type { ChainProvider } from "@/ports/chain-provider";
-import type { PaymentRepository } from "@/ports/payment-repository";
+import {
+  ASSET,
+  CHAIN,
+  USDC_TOKEN_ADDRESS,
+  type MatchedTransfer,
+  type NewPaymentIntent,
+  type PaymentIntent,
+} from "@/domain/payment-intent";
+import { compareTransfers, transferIdentity } from "@/domain/reconciliation";
+import type { ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
+import type {
+  ApplyReconciliationOutcome,
+  EvidenceCursor,
+  EvidencePage,
+  PaymentRepository,
+  ReconciliationAttemptRecord,
+  ReconciliationObservation,
+} from "@/ports/payment-repository";
+
+export interface FakeChainState {
+  latestBlock: bigint;
+  transfers: ChainTransfer[];
+  /** Block number → timestamp; blocks not listed derive a timestamp from their number. */
+  timestamps?: Map<bigint, Date>;
+  /** Injected failures per operation. */
+  failLatestBlock?: Error;
+  failTransfers?: Error;
+  failTimestamps?: Error;
+}
 
 export class FakeChainProvider implements ChainProvider {
   calls = 0;
+  readonly transferQueries: UsdcTransferQuery[] = [];
+  readonly timestampRequests: bigint[] = [];
+  state: FakeChainState;
 
-  constructor(private readonly behaviour: { latestBlock: bigint } | { error: Error }) {}
+  constructor(behaviour: { latestBlock: bigint } | { error: Error } | FakeChainState) {
+    if ("error" in behaviour) {
+      this.state = { latestBlock: 0n, transfers: [], failLatestBlock: behaviour.error };
+    } else if ("transfers" in behaviour) {
+      this.state = behaviour;
+    } else {
+      this.state = { latestBlock: behaviour.latestBlock, transfers: [] };
+    }
+  }
 
   async getLatestBlock(): Promise<bigint> {
     this.calls += 1;
-    if ("error" in this.behaviour) {
-      throw this.behaviour.error;
+    if (this.state.failLatestBlock !== undefined) {
+      throw this.state.failLatestBlock;
     }
-    return this.behaviour.latestBlock;
+    return this.state.latestBlock;
+  }
+
+  async getUsdcTransfers(query: UsdcTransferQuery): Promise<ChainTransfer[]> {
+    this.transferQueries.push(query);
+    if (this.state.failTransfers !== undefined) {
+      throw this.state.failTransfers;
+    }
+    return this.state.transfers.filter(
+      (transfer) =>
+        transfer.from === query.payer &&
+        transfer.to === query.recipient &&
+        transfer.blockNumber >= query.fromBlock &&
+        transfer.blockNumber <= query.toBlock,
+    );
+  }
+
+  async getBlockTimestamp(blockNumber: bigint): Promise<Date> {
+    this.timestampRequests.push(blockNumber);
+    if (this.state.failTimestamps !== undefined) {
+      throw this.state.failTimestamps;
+    }
+    return this.state.timestamps?.get(blockNumber) ?? new Date(Number(blockNumber) * 2_000);
   }
 }
 
 export class InMemoryPaymentRepository implements PaymentRepository {
   readonly intents = new Map<string, PaymentIntent>();
+  /** intentId → identity → evidence row. */
+  readonly evidence = new Map<string, Map<string, MatchedTransfer>>();
+  readonly attempts: Array<ReconciliationAttemptRecord & { paymentIntentId: string }> = [];
   readonly now: () => Date;
 
   constructor(now: () => Date = () => new Date()) {
@@ -62,5 +124,85 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 
   async getPaymentIntentById(id: string): Promise<PaymentIntent | null> {
     return this.intents.get(id) ?? null;
+  }
+
+  async applyReconciliation(
+    intentId: string,
+    observation: ReconciliationObservation,
+  ): Promise<ApplyReconciliationOutcome | null> {
+    const current = this.intents.get(intentId);
+    if (current === undefined) {
+      return null;
+    }
+    const stale = current.lastReconciledBlock !== null && observation.latestBlock < current.lastReconciledBlock;
+    const now = this.now();
+    let intent = current;
+
+    if (!stale) {
+      const rows = this.evidence.get(intentId) ?? new Map<string, MatchedTransfer>();
+      for (const transfer of observation.result.transfers) {
+        const identity = transferIdentity(transfer);
+        const existing = rows.get(identity);
+        rows.set(identity, {
+          txHash: transfer.txHash,
+          logIndex: transfer.logIndex,
+          blockNumber: transfer.blockNumber,
+          blockHash: transfer.blockHash,
+          fromAddress: transfer.from,
+          toAddress: transfer.to,
+          amountUnits: transfer.amountUnits,
+          blockTimestamp: transfer.blockTimestamp,
+          association: transfer.association,
+          confirmations: Number(transfer.confirmations),
+          firstSeenAt: existing?.firstSeenAt ?? now,
+          lastSeenAt: now,
+        });
+      }
+      this.evidence.set(intentId, rows);
+      intent = {
+        ...current,
+        status: observation.result.status,
+        receivedAmountUnits: observation.result.receivedAmountUnits,
+        detectedAmountUnits: observation.result.detectedAmountUnits,
+        matchConfidence: observation.result.matchConfidence,
+        paidAt: observation.result.paidAt,
+        lastReconciledBlock: observation.latestBlock,
+        lastReconciledAt: now,
+        updatedAt: now,
+      };
+      this.intents.set(intentId, intent);
+    }
+
+    this.attempts.push({
+      paymentIntentId: intentId,
+      ...observation.attempt,
+      latestBlock: observation.latestBlock,
+      resultStatus: stale ? null : observation.result.status,
+      errorCode: stale ? "STALE_OBSERVATION" : null,
+    });
+    return { applied: !stale, intent };
+  }
+
+  async recordReconciliationAttempt(intentId: string, attempt: ReconciliationAttemptRecord): Promise<void> {
+    this.attempts.push({ paymentIntentId: intentId, ...attempt });
+  }
+
+  async getEvidencePage(
+    intentId: string,
+    { limit, cursor }: { limit: number; cursor: EvidenceCursor | null },
+  ): Promise<EvidencePage> {
+    const all = [...(this.evidence.get(intentId)?.values() ?? [])].sort(compareTransfers);
+    const after = cursor === null ? all : all.filter((row) => compareTransfers(row, cursor) > 0);
+    const items = after.slice(0, limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      after.length > limit && last !== undefined
+        ? { blockNumber: last.blockNumber, logIndex: last.logIndex, txHash: last.txHash }
+        : null;
+    return { items, nextCursor };
+  }
+
+  evidenceRows(intentId: string): MatchedTransfer[] {
+    return [...(this.evidence.get(intentId)?.values() ?? [])].sort(compareTransfers);
   }
 }
