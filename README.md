@@ -12,14 +12,16 @@ plus transaction evidence.
 
 ## Status
 
-Milestone 0 — scaffold, contracts, and public deployment shell. The payment
-intent API (`/v1/*`), persistence, chain integration and demo UI arrive in
-later milestones (see `ARCHITECTURE.md` §17).
+Milestone 1 — persistence and the create/read vertical slice. Payment intents
+can be created (with a Base start block read through the chain provider) and
+read back. Reconciliation, evidence and the demo UI arrive in later
+milestones (see `ARCHITECTURE.md` §17).
 
 ## Stack
 
 Node.js 24 · TypeScript 6 (strict) · Next.js 16 App Router (Node runtime, never
-Edge) · React 19 · Tailwind CSS 4 · Zod 4 · Vitest 4 · pnpm 10 · Vercel.
+Edge) · React 19 · Tailwind CSS 4 · Zod 4 · Drizzle ORM 0.44 + `pg` · viem 2 ·
+Neon PostgreSQL · Alchemy Base RPC · Vitest 4 · pnpm 10 · Vercel.
 
 ## Local setup
 
@@ -27,9 +29,13 @@ Edge) · React 19 · Tailwind CSS 4 · Zod 4 · Vitest 4 · pnpm 10 · Vercel.
 # Node 24 (see .node-version) and pnpm 10 (pinned in package.json "packageManager";
 # any recent pnpm switches to the pinned version automatically).
 pnpm install
-cp .env.example .env.local   # fill in values as needed
+cp .env.example .env.local   # fill in DATABASE_URL, DATABASE_URL_UNPOOLED, ALCHEMY_BASE_RPC_URL
+pnpm db:migrate              # applies drizzle/*.sql through DATABASE_URL_UNPOOLED
 pnpm dev                     # http://localhost:3000
 ```
+
+Migrations are applied only by `pnpm db:migrate` (locally or from CI) — never
+by `next build`, application startup, or a request handler.
 
 ## Scripts
 
@@ -42,10 +48,78 @@ pnpm dev                     # http://localhost:3000
 | `pnpm typecheck` | Generate Next route types, then `tsc --noEmit` |
 | `pnpm test`      | Vitest, single run                             |
 | `pnpm test:watch`| Vitest in watch mode                           |
+| `pnpm db:generate` | Generate a SQL migration from `src/db/schema.ts` into `drizzle/` |
+| `pnpm db:migrate`  | Apply committed migrations using `DATABASE_URL_UNPOOLED` |
 
 Required CI checks: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 
+Database integration tests (`tests/integration`) are skipped unless
+`TEST_DATABASE_URL` points at a dedicated test database:
+
+```sh
+TEST_DATABASE_URL=postgres://... pnpm test tests/integration
+```
+
 ## Public endpoints
+
+### `POST /v1/payment-intents`
+
+Declares an expected native-USDC payment on Base. The intent's matching window
+starts at the Base block after the latest block observed at creation.
+
+```sh
+curl -i https://<deployment>/v1/payment-intents \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "externalReference": "INV-204",
+    "chain": "base",
+    "asset": "USDC",
+    "amount": "850.00",
+    "recipient": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "payer": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+    "expiresAt": "2026-09-18T18:00:00Z",
+    "requiredConfirmations": 3
+  }'
+```
+
+`201 Created`:
+
+```json
+{
+  "id": "pi_9VF1Q6h9F0c3bqzXlmqz0xQQ0ivN3G9r1O5T7Y8b",
+  "status": "pending",
+  "externalReference": "INV-204",
+  "chain": "base",
+  "asset": "USDC",
+  "expectedAmount": "850.00",
+  "receivedAmount": "0.00",
+  "remainingAmount": "850.00",
+  "recipient": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "payer": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "requiredConfirmations": 3,
+  "matchConfidence": "none",
+  "paidAt": null,
+  "createdAt": "2026-09-17T14:31:02.000Z",
+  "expiresAt": "2026-09-18T18:00:00.000Z"
+}
+```
+
+Rules: `chain` must be `"base"` (`UNSUPPORTED_CHAIN`), `asset` must be
+`"USDC"` (`UNSUPPORTED_ASSET`), addresses must be valid EVM addresses
+(`INVALID_ADDRESS`), `amount` is a positive decimal string with at most six
+decimals, `expiresAt` is a UTC timestamp ending in `Z` between now and seven
+days out, `requiredConfirmations` is `1..64` (default `3`), `externalReference`
+is at most 128 characters, unknown fields are rejected, and the JSON body is
+limited to 16 KiB (`VALIDATION_ERROR`). If the chain provider cannot supply the
+latest block the response is `503 UPSTREAM_UNAVAILABLE` (retryable) and no
+intent is created.
+
+### `GET /v1/payment-intents/:id`
+
+Returns the persisted state in the same shape (`200`), `404 INTENT_NOT_FOUND`
+for an unknown ID, or `400 VALIDATION_ERROR` for a malformed one. No chain
+access happens on read; reconciliation is a separate, caller-triggered step
+(later milestone).
 
 ### `GET /health`
 
@@ -105,13 +179,21 @@ implemented in `src/lib/errors.ts`.
 ## Configuration
 
 All environment variables are validated once in `src/lib/config.ts`; see
-[`.env.example`](./.env.example) for the full list. Chain ID, the USDC contract,
-decimals, confirmation defaults, expiry and body limits are code constants.
+[`.env.example`](./.env.example) for the full list. Chain ID (8453), the native
+USDC contract (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), decimals (6),
+confirmation defaults/bounds (3, `1..64`), the 7-day expiry limit and the 16 KiB
+body limit are code constants in `src/domain/payment-intent.ts`.
+
+Money is exact everywhere: API decimal strings ⇄ `bigint` token units in the
+domain ⇄ `numeric(78,0)` in PostgreSQL. JavaScript `number` is never used for
+amounts.
 
 ## Deployment (Vercel)
 
 One Vercel project, framework preset Next.js, Node.js 24 (selected from
-`package.json` `engines.node`). Set `XAGENT_SLUG` in the Production
-environment; `VERCEL_ENV` and `VERCEL_GIT_COMMIT_SHA` are provided by the
-platform. After each deploy verify `/health` reports the reviewed commit and
+`package.json` `engines.node`). Set `DATABASE_URL`, `DATABASE_URL_UNPOOLED`,
+`ALCHEMY_BASE_RPC_URL` and `XAGENT_SLUG` per environment (previews must never
+point at the production database); `VERCEL_ENV` and `VERCEL_GIT_COMMIT_SHA`
+are provided by the platform. For schema-changing commits run `pnpm db:migrate`
+against the target database before promoting the deployment. After each deploy verify `/health` reports the reviewed commit and
 `/.well-known/xagent-verification.json` returns `200`.

@@ -1,5 +1,7 @@
 # pnpm 10 blocks dependency postinstall scripts unless allowed here.
-# unrs-resolver (pulled in by eslint-import-resolver-typescript) ships an
-# optional native binary and falls back to JS when its build is skipped.
+# unrs-resolver (eslint-import-resolver-typescript) and esbuild (drizzle-kit)
+# ship prebuilt platform binaries as optional dependencies; their postinstall
+# scripts are only fallbacks, so builds stay denied.
 allowBuilds:
   unrs-resolver: false
+  esbuild: false

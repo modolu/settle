@@ -24,6 +24,12 @@ const envSchema = z.object({
   // itself returns 500 when it is absent (ARCHITECTURE.md §14).
   XAGENT_SLUG: z.string().trim().min(1).optional(),
   LOG_LEVEL: z.enum(LOG_LEVELS).default("info"),
+  // Neon pooled runtime connection (application queries).
+  DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/, error: "must be a postgres:// URL" }),
+  // Neon direct connection; used only by migration tooling (drizzle.config.ts).
+  DATABASE_URL_UNPOOLED: z.url({ protocol: /^postgres(ql)?$/, error: "must be a postgres:// URL" }),
+  // Server-only Base mainnet RPC endpoint; contains the provider credential.
+  ALCHEMY_BASE_RPC_URL: z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }),
 });
 
 /** Raw environment input; `process.env` or an explicit map in tests. */
@@ -40,6 +46,10 @@ export interface AppConfig {
   /** Registered hackathon slug, or `null` when not configured. */
   readonly xagentSlug: string | null;
   readonly logLevel: LogLevel;
+  /** Secrets: never log these or echo them in any response. */
+  readonly databaseUrl: string;
+  readonly databaseUrlUnpooled: string;
+  readonly alchemyBaseRpcUrl: string;
 }
 
 export class ConfigError extends AppError {
@@ -77,7 +87,16 @@ export function loadConfig(env: EnvironmentSource = process.env): AppConfig {
     throw new ConfigError(issues);
   }
 
-  const { NODE_ENV, VERCEL_ENV, VERCEL_GIT_COMMIT_SHA, XAGENT_SLUG, LOG_LEVEL } = parsed.data;
+  const {
+    NODE_ENV,
+    VERCEL_ENV,
+    VERCEL_GIT_COMMIT_SHA,
+    XAGENT_SLUG,
+    LOG_LEVEL,
+    DATABASE_URL,
+    DATABASE_URL_UNPOOLED,
+    ALCHEMY_BASE_RPC_URL,
+  } = parsed.data;
   const deploymentEnv: DeploymentEnvironment =
     VERCEL_ENV ?? (NODE_ENV === "test" ? "test" : "development");
 
@@ -87,6 +106,9 @@ export function loadConfig(env: EnvironmentSource = process.env): AppConfig {
     commitSha: VERCEL_GIT_COMMIT_SHA ?? null,
     xagentSlug: XAGENT_SLUG ?? null,
     logLevel: LOG_LEVEL,
+    databaseUrl: DATABASE_URL,
+    databaseUrlUnpooled: DATABASE_URL_UNPOOLED,
+    alchemyBaseRpcUrl: ALCHEMY_BASE_RPC_URL,
   };
 }
 
