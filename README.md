@@ -12,13 +12,29 @@ plus transaction evidence.
 
 ## Status
 
-Milestone 3 — the complete v1 reconciliation state model. Intents with or
-without a declared `payer` reconcile against canonical native Base USDC
-`Transfer` logs into `pending`, `detected`, `partial`, `paid`, `overpaid`,
-`expired` or `ambiguous`, with expiry-block resolution, canonical
-(reorg-aware) evidence and paginated evidence. Still to come (see
-`ARCHITECTURE.md` §17): the demo inspector UI (Milestone 4), abuse/failure
-hardening (Milestone 5) and submission hardening (Milestone 6).
+Milestone 4 — the complete v1 reconciliation state model plus the demo
+inspector UI. Intents with or without a declared `payer` reconcile against
+canonical native Base USDC `Transfer` logs into `pending`, `detected`,
+`partial`, `paid`, `overpaid`, `expired` or `ambiguous`, with expiry-block
+resolution, canonical (reorg-aware) evidence and paginated evidence. Still to
+come (see `ARCHITECTURE.md` §17): abuse/failure hardening (Milestone 5) and
+submission hardening (Milestone 6).
+
+## Demo console
+
+The interface is a demo console; the API is the product. Two pages, both
+driven entirely by the public REST API below (no privileged path):
+
+- `/` — create an expected payment (network and asset are fixed to Base /
+  native USDC) with a live curl preview of the exact request.
+- `/inspect/<id>` — the inspector: payment status with a one-line meaning,
+  expected / received / remaining, obligation metadata, the onchain evidence
+  ledger (`matched`, `candidate`, `orphaned` rows with Basescan links), a
+  “Reconcile now” action, copyable curl calls, and automatic reconciliation
+  every 7 seconds while the page is open (it stops on `paid`, `overpaid`,
+  `expired`, `ambiguous`, while the tab is hidden, and after three consecutive
+  failures until you reconcile manually). Amounts shown are the API's values;
+  nothing monetary is computed in the browser.
 
 ## Stack
 
