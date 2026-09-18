@@ -15,11 +15,12 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "drizzle-orm": "0.44.7",
+    "drizzle-orm": "0.45.2",
     "next": "16.3.5",
     "pg": "8.23.0",
     "react": "19.3.0",

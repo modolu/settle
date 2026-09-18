@@ -97,3 +97,88 @@ describe("readJsonBody", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Milestone 5: abuse hardening
+// ---------------------------------------------------------------------------
+import { assertNoRequestBody } from "@/lib/request-body";
+
+function streamingRequest(chunks: Uint8Array[], headers: Record<string, string> = {}): Request {
+  let index = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[index];
+      if (chunk === undefined) {
+        controller.close();
+        return;
+      }
+      index += 1;
+      controller.enqueue(chunk);
+    },
+  });
+  return new Request("http://localhost/x", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: stream,
+    // @ts-expect-error -- undici requires duplex for streaming bodies; not in lib.dom types
+    duplex: "half",
+  });
+}
+
+describe("readJsonBody — limit cannot be bypassed", () => {
+  it("enforces the limit on a streamed body with no Content-Length at all", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(4096));
+    const request = streamingRequest(Array.from({ length: 10 }, () => chunk));
+    expect(request.headers.get("content-length")).toBeNull();
+    await expectValidationError(readJsonBody(request), /must not exceed/);
+  });
+
+  it("enforces the limit when Content-Length understates the body", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(4096));
+    const request = streamingRequest(Array.from({ length: 5 }, () => chunk), { "content-length": "1" });
+    await expectValidationError(readJsonBody(request), /must not exceed/);
+  });
+
+  it("accepts a streamed body exactly at the limit even without Content-Length", async () => {
+    const text = `{"a":"${"x".repeat(MAX_JSON_BODY_BYTES - 8)}"}`;
+    const bytes = new TextEncoder().encode(text);
+    expect(bytes.byteLength).toBe(MAX_JSON_BODY_BYTES);
+    const request = streamingRequest([bytes.slice(0, 5000), bytes.slice(5000, 12000), bytes.slice(12000)]);
+    await expect(readJsonBody(request)).resolves.toEqual({ a: "x".repeat(MAX_JSON_BODY_BYTES - 8) });
+  });
+
+  it("rejects one byte over the limit on a streamed body without Content-Length", async () => {
+    const bytes = new TextEncoder().encode(`{"a":"${"x".repeat(MAX_JSON_BODY_BYTES - 7)}"}`);
+    expect(bytes.byteLength).toBe(MAX_JSON_BODY_BYTES + 1);
+    await expectValidationError(readJsonBody(streamingRequest([bytes])), /must not exceed/);
+  });
+});
+
+describe("assertNoRequestBody", () => {
+  it("accepts a bodiless request", async () => {
+    await expect(assertNoRequestBody(new Request("http://localhost/x", { method: "POST" }))).resolves.toBeUndefined();
+  });
+
+  it("rejects a declared body before reading it", async () => {
+    const request = new Request("http://localhost/x", { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+    await expectValidationError(assertNoRequestBody(request), /does not accept a request body/);
+  });
+
+  it("rejects a streamed body with no Content-Length after the first chunk, without draining it", async () => {
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+      },
+    });
+    const request = new Request("http://localhost/x", {
+      method: "POST",
+      body: stream,
+      // @ts-expect-error -- undici requires duplex for streaming bodies; not in lib.dom types
+      duplex: "half",
+    });
+    await expectValidationError(assertNoRequestBody(request), /does not accept a request body/);
+    expect(pulls).toBeLessThanOrEqual(2);
+  });
+});

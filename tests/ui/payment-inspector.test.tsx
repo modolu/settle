@@ -308,3 +308,27 @@ describe("PaymentInspector", () => {
     await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(4));
   });
 });
+
+describe("XSS safety (Milestone 5)", () => {
+  it("renders a hostile externalReference and addresses as inert text", async () => {
+    const hostile = "<script>alert(1)</script><img src=x onerror=alert(2)>";
+    fakeApi([
+      { method: "GET", path: GET_INTENT, reply: () => jsonResponse(intent({ externalReference: hostile })) },
+      {
+        method: "GET",
+        path: GET_EVIDENCE,
+        reply: () => jsonResponse({ evidence: [evidenceRow({ transactionHash: "<b>not a hash</b>", from: "<i>x</i>", to: RECIPIENT })], nextCursor: null }),
+      },
+    ]);
+    const { container } = render(<PaymentInspector id={ID} />);
+    await screen.findByText(STATUS_COPY.pending.explanation);
+    await waitFor(() => expect(screen.getAllByText(hostile).length).toBeGreaterThan(0));
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.querySelector("i")).toBeNull();
+    // A malformed hash is shown as text, not turned into an explorer link.
+    expect(container.querySelector("a[href*='basescan.org/tx/']")).toBeNull();
+    expect(container.innerHTML).toContain("&lt;script&gt;");
+  });
+});

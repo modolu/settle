@@ -64,3 +64,28 @@ export async function readJsonBody(request: Request, maxBytes = MAX_JSON_BODY_BY
     throw new AppError("VALIDATION_ERROR", "Request body is not valid JSON");
   }
 }
+
+/**
+ * For endpoints that take no body (e.g. `POST …/reconcile`): rejects any
+ * request that carries one, without buffering it. A declared length is
+ * checked first; otherwise the first chunk of the stream decides, and the
+ * stream is cancelled either way so nothing is read beyond it.
+ */
+export async function assertNoRequestBody(request: Request): Promise<void> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > 0) {
+    throw new AppError("VALIDATION_ERROR", "This endpoint does not accept a request body");
+  }
+  if (request.body === null) {
+    return;
+  }
+  const reader = request.body.getReader();
+  try {
+    const { done, value } = await reader.read();
+    if (!done && value.byteLength > 0) {
+      throw new AppError("VALIDATION_ERROR", "This endpoint does not accept a request body");
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}

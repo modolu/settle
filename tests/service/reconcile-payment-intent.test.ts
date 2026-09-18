@@ -588,3 +588,92 @@ describe("reconcilePaymentIntent — canonical evidence and reorgs", () => {
     expect(paymentRepository.evidenceRows(intent.id)[0]?.association).toBe("matched"); // outside window: untouched, uncounted
   });
 });
+
+describe("reconcilePaymentIntent — failure invariants (Milestone 5)", () => {
+  /** A partial intent with one persisted matched transfer, reconciled once successfully. */
+  async function partialIntent() {
+    const fixture = await setup({ latestBlock: 1_100n, transfers: [chainTransfer({ blockNumber: 1_050n, amountUnits: 15_000_000n })] });
+    const before = await fixture.reconcile("req_ok");
+    expect(before.intent.status).toBe("partial");
+    expect(fixture.paymentRepository.evidenceRows(fixture.intent.id)).toHaveLength(1);
+    return { ...fixture, before };
+  }
+
+  async function expectUnchanged(fixture: Awaited<ReturnType<typeof partialIntent>>) {
+    const after = await fixture.paymentRepository.getPaymentIntentById(fixture.intent.id);
+    expect(after).toEqual(fixture.before.intent);
+    const rows = fixture.paymentRepository.evidenceRows(fixture.intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.association).toBe("matched");
+  }
+
+  it("provider unavailable: upstream error, status stays partial, evidence untouched, nothing orphaned", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.failTransfers = new AppError("UPSTREAM_UNAVAILABLE", "Blockchain provider is temporarily unavailable");
+    fixture.chainProvider.state.transfers = []; // a failed scan must never read as "the transfer is gone"
+    fixture.chainProvider.state.latestBlock = 1_200n;
+    const error = await captureAppError(fixture.reconcile("req_fail"));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(error.retryable).toBe(true);
+    await expectUnchanged(fixture);
+    expect(fixture.paymentRepository.attempts.at(-1)).toMatchObject({ requestId: "req_fail", errorCode: "UPSTREAM_UNAVAILABLE", resultStatus: null });
+  });
+
+  it("provider timeout: same guarantees", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.failLatestBlock = new AppError("UPSTREAM_UNAVAILABLE", "timeout");
+    await captureAppError(fixture.reconcile("req_timeout"));
+    await expectUnchanged(fixture);
+  });
+
+  it("provider malformed response: UPSTREAM_INVALID_RESPONSE and no payment-state mutation", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.failTransfers = new AppError("UPSTREAM_INVALID_RESPONSE", "bad data");
+    const error = await captureAppError(fixture.reconcile("req_malformed"));
+    expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+    await expectUnchanged(fixture);
+  });
+
+  it("out-of-filter evidence from a faulty provider: rejected before any state or evidence changes", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.getUsdcTransfers = async () => [chainTransfer({ blockNumber: 1_060n, amountUnits: 10_000_000n, from: OTHER })];
+    const error = await captureAppError(fixture.reconcile("req_bad_filter"));
+    expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+    await expectUnchanged(fixture);
+  });
+
+  it("block timestamp lookup failure after logs were fetched: no evidence applied, no status mutation", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.transfers.push(chainTransfer({ blockNumber: 1_060n, amountUnits: 10_000_000n }));
+    fixture.chainProvider.state.failTimestamps = new AppError("UPSTREAM_UNAVAILABLE", "block lookup failed");
+    await captureAppError(fixture.reconcile("req_ts"));
+    await expectUnchanged(fixture); // the second transfer was never persisted
+  });
+
+  it("database failure while applying: error propagates, no attempt is fabricated, state unchanged", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.transfers.push(chainTransfer({ blockNumber: 1_060n, amountUnits: 10_000_000n }));
+    const attemptsBefore = fixture.paymentRepository.attempts.length;
+    fixture.paymentRepository.applyReconciliation = async () => {
+      throw new Error("connection terminated unexpectedly");
+    };
+    await expect(fixture.reconcile("req_db")).rejects.toThrow("connection terminated unexpectedly");
+    await expectUnchanged(fixture);
+    expect(fixture.paymentRepository.attempts).toHaveLength(attemptsBefore);
+  });
+
+  it("a failed scan is never interpreted as canonical absence: the transfer stays matched and counted", async () => {
+    const fixture = await partialIntent();
+    fixture.chainProvider.state.transfers = [];
+    fixture.chainProvider.state.failTransfers = new AppError("UPSTREAM_UNAVAILABLE", "down");
+    await captureAppError(fixture.reconcile("req_scan_fail"));
+    await expectUnchanged(fixture);
+    // Once the provider is healthy again and still returns the transfer, nothing has been lost.
+    fixture.chainProvider.state.failTransfers = undefined as unknown as Error;
+    delete fixture.chainProvider.state.failTransfers;
+    fixture.chainProvider.state.transfers = [chainTransfer({ blockNumber: 1_050n, amountUnits: 15_000_000n })];
+    const recovered = await fixture.reconcile("req_recovered");
+    expect(recovered.intent.status).toBe("partial");
+    expect(fixture.paymentRepository.evidenceRows(fixture.intent.id)).toHaveLength(1);
+  });
+});

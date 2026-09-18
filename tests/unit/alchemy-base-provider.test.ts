@@ -318,3 +318,69 @@ describe("createAlchemyBaseProvider.findLastBlockAtOrBefore", () => {
     expect(JSON.stringify(error.context)).not.toContain("super-secret");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Milestone 5: failure classification matrix and redaction across every path
+// ---------------------------------------------------------------------------
+import { InternalRpcError, RpcRequestError as RpcRequestErrorM5 } from "viem";
+
+describe("provider failure matrix (every path: stable code, safe message, no credential)", () => {
+  const rpcError = (code: number, message: string) =>
+    new RpcRequestErrorM5({ body: { method: "eth_getLogs" }, error: { code, message: `${message} ${SECRET_URL}` }, url: SECRET_URL });
+
+  const cases: Array<[string, () => Error, "UPSTREAM_UNAVAILABLE" | "UPSTREAM_INVALID_RESPONSE", boolean]> = [
+    ["timeout", () => new TimeoutError({ body: { method: "eth_getLogs" }, url: SECRET_URL }), "UPSTREAM_UNAVAILABLE", true],
+    ["connection failure (fetch failed)", () => new TypeError(`fetch failed: connect ECONNREFUSED ${SECRET_URL}`), "UPSTREAM_UNAVAILABLE", true],
+    ["HTTP provider failure (503)", () => new HttpRequestError({ url: SECRET_URL, status: 503, body: { method: "eth_getLogs" }, details: "Service Unavailable" }), "UPSTREAM_UNAVAILABLE", true],
+    ["HTTP provider failure (401 bad key)", () => new HttpRequestError({ url: SECRET_URL, status: 401, body: { method: "eth_getLogs" }, details: "Must be authenticated!" }), "UPSTREAM_UNAVAILABLE", true],
+    ["JSON-RPC internal error (-32603)", () => new InternalRpcError(rpcError(-32603, "internal error")), "UPSTREAM_UNAVAILABLE", true],
+    ["generic JSON-RPC request error", () => rpcError(-32000, "execution reverted"), "UPSTREAM_UNAVAILABLE", true],
+    ["eth_getLogs range/size failure (-32005)", () => new LimitExceededRpcError(rpcError(-32005, "query returned more than 10000 results")), "UPSTREAM_UNAVAILABLE", false],
+    ["eth_getLogs invalid params (-32602)", () => new InvalidParamsRpcError(rpcError(-32602, "block range too large")), "UPSTREAM_UNAVAILABLE", false],
+  ];
+
+  for (const [label, make, code, retryable] of cases) {
+    it(`getUsdcTransfers: ${label} → ${code} (retryable=${retryable})`, async () => {
+      const { client } = logsClient(async () => {
+        throw make();
+      });
+      const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query));
+      expect(error.code).toBe(code);
+      expect(error.retryable).toBe(retryable);
+      expect(error.message).toMatch(/^Blockchain provider (is temporarily unavailable|could not serve the requested block range)$/);
+      const serialized = JSON.stringify({ message: error.message, context: error.context, cause: error.cause ?? null, stack: error.stack });
+      expect(serialized).not.toContain("super-secret");
+      expect(serialized).not.toContain("execution reverted");
+      expect(serialized).not.toContain("Must be authenticated");
+    });
+  }
+
+  it("block lookup failure → UPSTREAM_UNAVAILABLE without leaking the URL", async () => {
+    const client: BaseRpcClient = {
+      getBlockNumber: unused,
+      getLogs: unused,
+      getBlock: (async () => {
+        throw new HttpRequestError({ url: SECRET_URL, status: 502, body: { method: "eth_getBlockByNumber" } });
+      }) as unknown as BaseRpcClient["getBlock"],
+    };
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getBlockTimestamp(1n));
+    expect(error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(error.retryable).toBe(true);
+    expect(JSON.stringify({ c: error.context, m: error.message })).not.toContain("super-secret");
+  });
+
+  it("malformed provider response (non-array logs) → UPSTREAM_INVALID_RESPONSE, not retryable", async () => {
+    const { client } = logsClient(async () => ({ not: "an array" }));
+    const error = await captureAppError(createAlchemyBaseProvider({ rpcUrl: SECRET_URL, client }).getUsdcTransfers(query));
+    expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
+    expect(error.retryable).toBe(false);
+  });
+
+  it("uses a finite HTTP timeout and no automatic retries for the real transport", () => {
+    // The transport options are private to viem; assert the documented defaults on our side.
+    expect(typeof createAlchemyBaseProvider).toBe("function");
+    const source = createAlchemyBaseProvider.toString();
+    expect(source).toContain("retryCount: 0");
+    expect(source).toMatch(/timeout: options\.timeoutMs \?\? DEFAULT_TIMEOUT_MS/);
+  });
+});

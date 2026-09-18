@@ -618,3 +618,108 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — c
     expect(await rows(intent.id)).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Milestone 5: all-or-nothing application under mid-transaction failure
+// ---------------------------------------------------------------------------
+describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — transaction atomicity (Neon)", () => {
+  let handle: DatabaseHandle;
+  const createdIds: string[] = [];
+
+  beforeAll(async () => {
+    handle = createDatabase(TEST_DATABASE_URL as string);
+    await migrate(handle.db, { migrationsFolder: "drizzle" });
+  });
+
+  afterAll(async () => {
+    for (const id of createdIds) {
+      await handle.db.delete(reconciliationAttempts).where(eq(reconciliationAttempts.paymentIntentId, id));
+      await handle.db.delete(matchedTransfers).where(eq(matchedTransfers.paymentIntentId, id));
+      await handle.db.delete(paymentIntents).where(eq(paymentIntents.id, id));
+    }
+    await handle.pool.end();
+  });
+
+  function transferAt(blockNumber: bigint, amountUnits: bigint): ObservedTransfer {
+    return {
+      txHash: `0x${blockNumber.toString(16).padStart(64, "0")}`,
+      logIndex: 0,
+      blockNumber,
+      blockHash: `0x${"b".repeat(64)}`,
+      from: PAYER,
+      to: RECIPIENT,
+      amountUnits,
+      blockTimestamp: new Date(Number(blockNumber) * 2_000),
+    };
+  }
+
+  function observe(latestBlock: bigint, transfers: ObservedTransfer[], requestId = "req_atomic"): ReconciliationObservation {
+    const window = { fromBlock: 1_000n, toBlock: latestBlock };
+    const startedAt = new Date();
+    return {
+      latestBlock,
+      window,
+      expiryBlock: null,
+      result: reconcile({ expectedAmountUnits: 25_000_000n, requiredConfirmations: 3, latestBlock, payer: PAYER, window, expiryPassed: false, transfers }),
+      attempt: { requestId, provider: "alchemy", fromBlock: 1_000n, toBlock: latestBlock, candidateCount: transfers.length, startedAt, completedAt: startedAt },
+    };
+  }
+
+  async function seed() {
+    const repository = createDrizzlePaymentRepository(handle.db);
+    const id = newPaymentIntentId();
+    createdIds.push(id);
+    await repository.createPaymentIntent({
+      id,
+      externalReference: null,
+      expectedAmountUnits: 25_000_000n,
+      recipientAddress: RECIPIENT,
+      payerAddress: PAYER,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      requiredConfirmations: 3,
+      startBlock: 1_000n,
+    });
+    const first = await repository.applyReconciliation(id, observe(1_100n, [transferAt(1_050n, 15_000_000n)]));
+    expect(first?.intent.status).toBe("partial");
+    return { repository, id, before: first?.intent };
+  }
+
+  async function snapshot(id: string) {
+    const rows = await handle.db.select().from(matchedTransfers).where(eq(matchedTransfers.paymentIntentId, id));
+    const attempts = await handle.db.select().from(reconciliationAttempts).where(eq(reconciliationAttempts.paymentIntentId, id));
+    return { rows: rows.length, attempts: attempts.length };
+  }
+
+  it("a failure on the final attempt insert rolls back the evidence upserts and the intent update", async () => {
+    const { repository, id, before } = await seed();
+    const initial = await snapshot(id);
+    // request_id is varchar(64): an oversized value fails the very last statement of the transaction.
+    const poisoned = observe(1_101n, [transferAt(1_050n, 15_000_000n), transferAt(1_060n, 10_000_000n)], "r".repeat(65));
+    await expect(repository.applyReconciliation(id, poisoned)).rejects.toThrow();
+    expect(await snapshot(id)).toEqual(initial);
+    expect(await repository.getPaymentIntentById(id)).toEqual(before);
+  });
+
+  it("a failure on the intent update rolls back evidence written earlier in the same transaction", async () => {
+    const { repository, id, before } = await seed();
+    const initial = await snapshot(id);
+    const good = observe(1_101n, [transferAt(1_050n, 15_000_000n), transferAt(1_060n, 10_000_000n)]);
+    // Violates payment_intents_received_amount_non_negative during the UPDATE, after the upserts ran.
+    const poisoned: ReconciliationObservation = { ...good, result: { ...good.result, receivedAmountUnits: -1n } };
+    await expect(repository.applyReconciliation(id, poisoned)).rejects.toThrow();
+    expect(await snapshot(id)).toEqual(initial);
+    expect(await repository.getPaymentIntentById(id)).toEqual(before);
+    // The same observation, un-poisoned, then applies cleanly — nothing was left half-written.
+    const applied = await repository.applyReconciliation(id, good);
+    expect(applied?.intent.status).toBe("paid");
+    expect((await snapshot(id)).rows).toBe(2);
+  });
+
+  it("a stale observation remains non-destructive even when it carries contradictory evidence", async () => {
+    const { repository, id, before } = await seed();
+    const stale = await repository.applyReconciliation(id, observe(1_090n, [], "req_stale_m5"));
+    expect(stale?.applied).toBe(false);
+    expect(await repository.getPaymentIntentById(id)).toEqual(before);
+    expect((await snapshot(id)).rows).toBe(1);
+  });
+});

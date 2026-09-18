@@ -80,3 +80,53 @@ describe("parseLogLevel", () => {
     expect(isLogLevel("WARN")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Milestone 5: secret redaction at the logging choke point
+// ---------------------------------------------------------------------------
+import { redactSecrets } from "@/lib/logger";
+
+const DB_URL = "postgres://settle:hunter2-secret@ep-cool-name.us-east-2.aws.neon.tech/settle?sslmode=require";
+const RPC_URL = "https://base-mainnet.g.alchemy.com/v2/AbCdEf123456SecretKey_-";
+
+describe("redactSecrets", () => {
+  it("masks credentials embedded in URLs but keeps the host for diagnostics", () => {
+    expect(redactSecrets(`connect failed: ${DB_URL}`)).toBe(
+      "connect failed: postgres://[redacted]@ep-cool-name.us-east-2.aws.neon.tech/settle?sslmode=require",
+    );
+  });
+
+  it("masks provider API keys carried in URL paths", () => {
+    expect(redactSecrets(`HTTP request failed. URL: ${RPC_URL}`)).toBe(
+      "HTTP request failed. URL: https://base-mainnet.g.alchemy.com/v2/[redacted]",
+    );
+  });
+
+  it("masks environment-style secret assignments", () => {
+    expect(redactSecrets(`env: DATABASE_URL=${DB_URL} ALCHEMY_BASE_RPC_URL=${RPC_URL} LOG_LEVEL=info`)).toBe(
+      "env: DATABASE_URL=[redacted] ALCHEMY_BASE_RPC_URL=[redacted] LOG_LEVEL=info",
+    );
+  });
+
+  it("drops query parameters echoed by database driver errors", () => {
+    const message = 'Failed query: insert into "payment_intents" (...) values ($1, $2)\nparams: pi_x,INV-204,0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    expect(redactSecrets(message)).toBe('Failed query: insert into "payment_intents" (...) values ($1, $2)\nparams: [redacted]');
+  });
+
+  it("truncates very long strings", () => {
+    expect(redactSecrets("y".repeat(5_000)).length).toBeLessThan(2_100);
+  });
+
+  it("is applied to every string in an emitted line, including nested error causes", () => {
+    const { lines, write } = capture();
+    const cause = new Error(`getaddrinfo ENOTFOUND ${DB_URL}`);
+    const outer = new Error(`request to ${RPC_URL} failed`, { cause });
+    createLogger({ level: "info", write }).error("boom", { err: outer, note: `saw DATABASE_URL=${DB_URL}` });
+    const line = lines[0]?.line ?? "";
+    expect(line).not.toContain("hunter2");
+    expect(line).not.toContain("SecretKey");
+    expect(line).toContain("postgres://[redacted]@ep-cool-name");
+    expect(line).toContain("/v2/[redacted]");
+    expect(line).toContain("DATABASE_URL=[redacted]");
+  });
+});

@@ -373,3 +373,84 @@ describe("GET /v1/payment-intents/:id/evidence", () => {
     expect((await evidence("nope")).status).toBe(400);
   });
 });
+
+describe("abuse hardening (Milestone 5)", () => {
+  it("an oversized create body is rejected before validation, services or providers run", async () => {
+    const chainProvider = new FakeChainProvider({ latestBlock: 1n, transfers: [] });
+    const repository = wire(chainProvider);
+    const huge = JSON.stringify({ ...validBody, externalReference: "x".repeat(20_000) });
+    const response = await post(huge);
+    expect(response.status).toBe(400);
+    const envelope = (await response.json()) as { error: { code: string; message: string } };
+    expect(envelope.error.code).toBe("VALIDATION_ERROR");
+    expect(envelope.error.message).toMatch(/must not exceed 16384 bytes/);
+    expect(chainProvider.calls).toBe(0);
+    expect(repository.intents.size).toBe(0);
+  });
+
+  it("a create body exactly at 16 KiB is processed normally", async () => {
+    wire(new FakeChainProvider({ latestBlock: 1n, transfers: [] }));
+    const padded = { ...validBody, externalReference: "x".repeat(100) };
+    let body = JSON.stringify(padded);
+    // Pad the reference so the serialized body is exactly the limit.
+    padded.externalReference = "x".repeat(100 + (16_384 - Buffer.byteLength(body)));
+    body = JSON.stringify(padded);
+    expect(Buffer.byteLength(body)).toBe(16_384);
+    const response = await post(body);
+    expect(response.status).toBe(400); // exceeds the 128-character reference limit — but only *after* the body was read
+    const envelope = (await response.json()) as { error: { message: string } };
+    expect(envelope.error.message).toMatch(/externalReference/);
+  });
+
+  it("reconcile rejects a request body without running the service", async () => {
+    const chainProvider = new FakeChainProvider({ latestBlock: 100n, transfers: [] });
+    wire(chainProvider);
+    const created = (await (await post(validBody)).json()) as { id: string };
+    const callsAfterCreate = chainProvider.calls;
+    const response = await POST_RECONCILE(
+      new Request(`http://localhost/v1/payment-intents/${created.id}/reconcile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      }),
+      { params: Promise.resolve({ id: created.id }) },
+    );
+    expect(response.status).toBe(400);
+    expect(chainProvider.calls).toBe(callsAfterCreate);
+  });
+
+  it("malformed IDs are rejected before any repository access on every intent route", async () => {
+    const repository = wire(new FakeChainProvider({ latestBlock: 1n, transfers: [] }));
+    const spy = vi.spyOn(repository, "getPaymentIntentById");
+    for (const bad of ["1", "pi_short", `pi_${"a".repeat(33)}`, "550e8400-e29b-41d4-a716-446655440000", "pi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"]) {
+      expect((await get(bad)).status).toBe(400);
+      expect((await reconcile(bad)).status).toBe(400);
+      expect((await evidence(bad)).status).toBe(400);
+    }
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("every API response is uncacheable and carries no CORS wildcard", async () => {
+    wire(new FakeChainProvider({ latestBlock: 100n, transfers: [] }));
+    const created = (await (await post(validBody)).json()) as { id: string };
+    for (const response of [await get(created.id), await reconcile(created.id), await evidence(created.id), await get("nope")]) {
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      expect(response.headers.get("x-request-id")).toMatch(/^req_/);
+    }
+  });
+
+  it("an unexpected internal failure yields the generic envelope, never the underlying message", async () => {
+    const repository = wire(new FakeChainProvider({ latestBlock: 100n, transfers: [] }));
+    const created = (await (await post(validBody)).json()) as { id: string };
+    repository.getPaymentIntentById = async () => {
+      throw new Error("Failed query: select … params: secret-looking-value postgres://u:p@h/db");
+    };
+    const response = await get(created.id);
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: { code: "INTERNAL_ERROR", message: "Unexpected internal error", retryable: false } });
+    expect(text).not.toContain("postgres://");
+    expect(text).not.toContain("secret-looking");
+  });
+});

@@ -70,7 +70,11 @@ by `next build`, application startup, or a request handler.
 | `pnpm db:generate` | Generate a SQL migration from `src/db/schema.ts` into `drizzle/` |
 | `pnpm db:migrate`  | Apply committed migrations using `DATABASE_URL_UNPOOLED` |
 
+| `pnpm test:e2e`  | Playwright browser smoke suite (builds and serves the app itself; needs `pnpm exec playwright install chromium` once) |
+
 Required CI checks: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+The browser suite (`pnpm test:e2e`) intercepts every API call with fixtures,
+so it needs no database or RPC credential; it runs at 1440×900 and 390×844.
 
 Database integration tests (`tests/integration`) are skipped unless
 `TEST_DATABASE_URL` points at a dedicated test database:
@@ -310,6 +314,67 @@ body limit are code constants in `src/domain/payment-intent.ts`.
 Money is exact everywhere: API decimal strings ⇄ `bigint` token units in the
 domain ⇄ `numeric(78,0)` in PostgreSQL. JavaScript `number` is never used for
 amounts.
+
+## Production security
+
+Settle is a public, read-only API. The controls below are code constants or
+platform configuration — none of them is tunable through request input or an
+environment variable.
+
+- **Capability IDs.** Every intent ID is `pi_` + 192 bits of cryptographic
+  randomness. Possession of the ID is the only access control in v1; there is
+  no endpoint that lists intents (`GET /v1/payment-intents` is 405), malformed
+  IDs are rejected before any database access, and logs carry only an ID prefix.
+- **Bounded input.** JSON bodies are limited to 16 KiB, enforced while the body
+  streams (a missing or false `Content-Length` cannot bypass it); reconcile
+  takes no body at all. Amount ≤ 30 integer digits and 6 decimals, expiry ≤ 7
+  days, `requiredConfirmations` 1–64, `externalReference` ≤ 128 characters,
+  unknown fields rejected, chain/asset fixed to Base / native USDC.
+- **Failure safety.** A provider timeout, HTTP/JSON-RPC failure, malformed
+  response, block-lookup failure or database error never changes payment
+  state or evidence: provider calls happen before the database transaction,
+  the transaction is all-or-nothing under a row lock, and a failed scan is
+  never read as canonical absence. Upstream failures return
+  `UPSTREAM_UNAVAILABLE` / `UPSTREAM_INVALID_RESPONSE`, never "no payment".
+- **Secrets.** `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and
+  `ALCHEMY_BASE_RPC_URL` are server-only (no `NEXT_PUBLIC_*`), the provider
+  adapter never re-throws raw viem errors, and the logger redacts URL
+  credentials, provider key paths, `*_URL=`-style assignments and database
+  query parameters from every line. Settle holds no private keys and never
+  signs or sends a transaction.
+- **Headers.** Every response carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a restrictive
+  `Permissions-Policy`; `X-Powered-By` is removed. HTML pages get a
+  per-request nonce Content Security Policy (`src/proxy.ts`):
+  `default-src 'self'; script-src 'self' 'nonce-…' 'strict-dynamic';
+  style-src 'self' 'nonce-…'; img-src 'self' data:; font-src 'self';
+  connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';
+  frame-ancestors 'none'` (development adds `'unsafe-eval'` only).
+- **CORS.** None. The demo UI is same-origin and agents call the API
+  server-to-server, which needs no CORS. No `Access-Control-Allow-Origin`
+  header is ever sent.
+- **Caching.** All API, health and verification responses are
+  `Cache-Control: no-store`; pages are rendered per request.
+- **Runtime.** Node.js 24 (`engines.node`), Next.js Node runtime only.
+
+### Vercel Firewall rate limits (required before production submission)
+
+Rate limiting is applied by the Vercel Firewall, not by application code, and
+it cannot be expressed in `vercel.json` (which only supports `deny` and
+`challenge` mitigations). Create these three **Custom Rules** in the project
+dashboard (Firewall → Configure → New Rule), in this order, each keyed by
+**IP address** over a **60-second** window with the follow-up action
+**Deny (429)**:
+
+| Rule | Condition | Limit |
+| --- | --- | --- |
+| Create intents | Request path starts with `/v1/payment-intents` **and** method is `POST` **and** path does not contain `/reconcile` | 10 requests / minute / IP |
+| Reconcile | Request path matches `/v1/payment-intents/*/reconcile` **and** method is `POST` | 30 requests / minute / IP |
+| All API traffic | Request path starts with `/v1/` | 60 requests / minute / IP |
+
+Stage each rule with the *Log* action first, then switch to *Deny*. The
+application still enforces its semantic bounds (body size, expiry,
+confirmations) even if the firewall is misconfigured.
 
 ## Deployment (Vercel)
 

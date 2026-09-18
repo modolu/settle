@@ -5,6 +5,8 @@
  * Chain ID, token contract, decimals, confirmation defaults, expiry limits and
  * body limits are code constants, never environment variables.
  */
+import "server-only";
+
 import { z } from "zod";
 
 import { AppError } from "./errors";

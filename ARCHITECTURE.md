@@ -39,7 +39,7 @@ Settle stores declared obligations, observed evidence, and reconciliation histor
 | Web framework | Next.js App Router | 16 | One deployable app for REST routes plus the small inspector UI. |
 | UI runtime | React | 19 | Bundled naturally with Next.js 16; no separate SPA architecture. |
 | Database | Neon PostgreSQL | 18 | Managed relational persistence; fits intents, evidence, constraints, and transactions. |
-| ORM/query layer | Drizzle ORM | 0.44.x stable | Thin SQL-oriented layer with explicit migrations. Do not adopt Drizzle 1.x beta in v1. |
+| ORM/query layer | Drizzle ORM | 0.45.2 | Thin SQL-oriented layer with explicit migrations. Latest stable 0.x release; fixes the identifier/`sql.as` escaping security advisory while avoiding Drizzle 1.x prerelease risk. Do not adopt Drizzle 1.x beta in v1. |
 | PostgreSQL driver | `pg` | 8 | Mature Node driver; use Neon’s pooled connection string and real interactive transactions. |
 | EVM client | `viem` | 2 | Typed EVM RPC, address validation, ABI decoding, exact unit conversion. |
 | Validation | Zod | 4 | Single runtime schema layer for request, config, and response-adjacent validation. |
@@ -847,7 +847,7 @@ The exact X-Agent verification JSON schema must come from the official hackathon
 | Conservative no-payer matching | Multiple plausible senders must not create false certainty. | Heuristic scoring or choosing the closest amount. |
 | UI calls public API | Demo should prove the real capability rather than a privileged code path. | Direct DB/service calls from UI. |
 | Vercel Firewall rate limits | Meets public-API abuse requirement without another datastore. | Redis-based limiter. |
-| Stable Drizzle 0.44.x | v1 favors documented stable behavior. | Drizzle 1.x beta during hackathon. |
+| Stable Drizzle 0.45.2 | v1 favors documented stable behavior; 0.45.2 is the latest stable 0.x release and fixes the identifier/`sql.as` escaping security advisory (GHSA-gpj5-g38j-94v9) while avoiding Drizzle 1.x prerelease risk. | Drizzle 1.x beta/RC during hackathon; staying on 0.44.x with a known advisory. |
 
 ---
 

@@ -1,5 +1,8 @@
 import { CreateIntentForm } from "@/components/create-intent-form";
 
+// Rendered per request so the nonce-based Content Security Policy applies (see src/proxy.ts).
+export const dynamic = "force-dynamic";
+
 const FLOW = [
   { step: "Declare", detail: "An agent creates an expected USDC payment: amount, recipient, optional payer, expiry." },
   { step: "Pay", detail: "The payer sends native USDC on Base, entirely outside Settle." },

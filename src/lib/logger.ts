@@ -70,13 +70,46 @@ function serializeError(error: Error): Record<string, unknown> {
   return out;
 }
 
-/** JSON replacer: money is `bigint` throughout the codebase and Errors are opaque to JSON. */
+const MAX_STRING_LENGTH = 2_000;
+
+/**
+ * Redaction applied to every string that reaches a log line, whatever path it
+ * took to get there (error messages, causes, stacks, ad-hoc fields):
+ * credentials embedded in URLs, provider keys in URL paths, environment-style
+ * secret assignments, and query parameters echoed by database driver errors.
+ */
+const REDACTIONS: ReadonlyArray<readonly [RegExp, string]> = [
+  // scheme://user:password@host → scheme://[redacted]@host
+  [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@"],
+  // https://…alchemy.com/v2/<key> and similar provider key paths
+  [/(\/v2\/)[A-Za-z0-9_-]{8,}/g, "$1[redacted]"],
+  // DATABASE_URL=…, ALCHEMY_BASE_RPC_URL=… (any *_URL / *_KEY / *_SECRET assignment)
+  [/\b([A-Z0-9_]*(?:URL|KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)=\S+/g, "$1=[redacted]"],
+  // Drizzle/pg "Failed query: … params: …" — parameters carry addresses and references
+  [/(params:\s*).*$/s, "$1[redacted]"],
+];
+
+export function redactSecrets(text: string): string {
+  let out = text.length > MAX_STRING_LENGTH ? `${text.slice(0, MAX_STRING_LENGTH)}…[truncated]` : text;
+  for (const [pattern, replacement] of REDACTIONS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+/**
+ * JSON replacer: money is `bigint` throughout the codebase, Errors are opaque
+ * to JSON, and every string is redacted before it leaves the process.
+ */
 function jsonReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "bigint") {
     return value.toString();
   }
   if (value instanceof Error) {
     return serializeError(value);
+  }
+  if (typeof value === "string") {
+    return redactSecrets(value);
   }
   return value;
 }
