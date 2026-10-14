@@ -25,8 +25,8 @@
 - No extra real-money transactions for partial/overpaid; tests are sufficient.
 
 ## Task list
-1. **Preserve submission + setup + funding-path check** — IN PROGRESS
-2. **Chain + money primitives** — TODO
+1. **Preserve submission + setup + funding-path check** — DONE
+2. **Chain + money primitives** — IN PROGRESS
 3. **Dual-chain API vertical slice** — TODO
 4. **DB + repository** — TODO
 5. **Provider routing** — TODO
@@ -39,7 +39,7 @@
 12. **Submission polish / final regression / demo** — TODO
 
 ## Decisions made
-- Use Claude Code as the implementation agent; tech lead drives it headlessly, reviews actual diffs, verifies, and commits.
+- Use Codex CLI as the implementation agent; Claude Code headless mode hung twice at kickoff, so we switched once to protect the deadline. Tech lead drives Codex headlessly, reviews actual diffs, verifies, and commits.
 - X-Agent review commit is frozen at `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`.
 - Immutable tag `xagent-submission-2026` was created and pushed at that commit.
 - Arc work uses branch `arc-microgrants`; X-Agent deployment must not be redeployed.
@@ -67,6 +67,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 1/12.
+- Current phase: Task 2/12.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK at kickoff.
+- Status: ON TRACK — Task 1 complete at 22:03 WAT.
