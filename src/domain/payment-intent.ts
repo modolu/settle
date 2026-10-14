@@ -7,15 +7,18 @@
  * or decimals is an architecture change (ARCHITECTURE.md §2).
  */
 
+import { CHAIN_DEFINITIONS, type SupportedChain } from "./chains";
+
+/** Legacy Base aliases retained so existing Base code/tests remain source-compatible. */
 export const CHAIN = "base" as const;
-export const CHAIN_ID = 8453;
+export const CHAIN_ID = CHAIN_DEFINITIONS.base.chainId;
 export const ASSET = "USDC" as const;
-export const USDC_DECIMALS = 6;
+export const USDC_DECIMALS = CHAIN_DEFINITIONS.base.usdcDecimals;
 /** Native Circle USDC on Base, lowercase (storage/equality form). */
-export const USDC_TOKEN_ADDRESS = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
-export const DEFAULT_REQUIRED_CONFIRMATIONS = 3;
-export const MIN_REQUIRED_CONFIRMATIONS = 1;
-export const MAX_REQUIRED_CONFIRMATIONS = 64;
+export const USDC_TOKEN_ADDRESS = CHAIN_DEFINITIONS.base.usdcTokenAddress;
+export const DEFAULT_REQUIRED_CONFIRMATIONS = CHAIN_DEFINITIONS.base.finality.defaultRequiredConfirmations;
+export const MIN_REQUIRED_CONFIRMATIONS = CHAIN_DEFINITIONS.base.finality.minRequiredConfirmations;
+export const MAX_REQUIRED_CONFIRMATIONS = CHAIN_DEFINITIONS.base.finality.maxRequiredConfirmations;
 export const MAX_INTENT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_EXTERNAL_REFERENCE_LENGTH = 128;
 
@@ -40,7 +43,7 @@ export type TransferAssociation = (typeof TRANSFER_ASSOCIATIONS)[number];
 export interface PaymentIntent {
   readonly id: string;
   readonly externalReference: string | null;
-  readonly chain: typeof CHAIN;
+  readonly chain: SupportedChain;
   readonly asset: typeof ASSET;
   readonly tokenAddress: string;
   readonly expectedAmountUnits: bigint;

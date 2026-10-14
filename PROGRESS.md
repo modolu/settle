@@ -26,8 +26,8 @@
 
 ## Task list
 1. **Preserve submission + setup + funding-path check** — DONE
-2. **Chain + money primitives** — IN PROGRESS
-3. **Dual-chain API vertical slice** — TODO
+2. **Chain + money primitives** — DONE
+3. **Dual-chain API vertical slice** — IN PROGRESS
 4. **DB + repository** — TODO
 5. **Provider routing** — TODO
 6. **Arc provider** — TODO
@@ -64,9 +64,11 @@
 - Local machine currently has Node 22.23.2 while `package.json` correctly requires Node 24.x. Do not downgrade the project. Final CI/deployment must use Node 24; existing baseline previously passed under Node 22 with the expected engine warning.
 - `TEST_DATABASE_URL` may be absent locally; if so, DB integration tests are skipped and must be reported as skipped, not passed.
 - Disk space is limited; avoid duplicate dependency trees or unnecessary installs.
+- Coding-agent blocker at ~22:09 WAT: Claude Code headless hung on three checks; Codex CLI is authenticated but usage-limited until 2026-10-15 02:08 WAT. User explicitly approved direct implementation through Desktop Commander, so this is no longer a build blocker.
+- Local `pnpm` cannot run under the current Node 22.12.0 because pnpm 10.34.5 requires >=22.13; verification currently invokes committed local binaries directly (`./node_modules/.bin/...`) without changing system Node or installing anything.
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 2/12.
+- Current phase: Task 3/12.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 1 complete at 22:03 WAT.
+- Status: ON TRACK — Task 2 complete; 431/431 unit tests, focused lint, and TypeScript typecheck green.

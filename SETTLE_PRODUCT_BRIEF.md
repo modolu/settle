@@ -9,6 +9,8 @@
 **MVP network:** Base  
 **MVP asset:** USDC  
 
+> **Arc Microgrants extension (2026-10-14):** the original X-Agent submission remains the frozen Base-only artifact. The `arc-microgrants` branch extends the same Settle product to Base + Arc without adding custody or payment execution. Arc uses exact 18-decimal native/system USDC transfer accounting and deterministic finality; the public API remains payment-intent/reconciliation/evidence oriented.
+
 ---
 
 ## 1. Executive Summary

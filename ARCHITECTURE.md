@@ -7,26 +7,26 @@
 
 ## 1. Overview
 
-Settle is an API-first, read-only payment reconciliation service for autonomous agents. A caller declares an expected USDC payment, the payment happens independently, and Settle later queries Base to determine whether canonical onchain transfers satisfy that obligation. The API returns a deterministic payment status plus transaction evidence.
+Settle is an API-first, read-only payment reconciliation service for autonomous agents. A caller declares an expected USDC payment, the payment happens independently, and Settle later queries the intent's persisted supported chain to determine whether canonical onchain transfers satisfy that obligation. The API returns a deterministic payment status plus transaction evidence.
 
 The v1 product is deliberately narrow:
 
-- Base mainnet only.
-- Native Circle USDC only.
+- Base mainnet and Arc mainnet only.
+- USDC only: native Circle USDC on Base; Arc native/system USDC movement accounting on Arc.
 - Anonymous payment intents identified by high-entropy opaque IDs.
 - Caller-triggered reconciliation only.
 - Partial-payment aggregation, overpayment detection, confirmation handling, evidence, and ambiguity handling.
 - One lightweight inspector/demo UI.
 - Public REST API, `/health`, and X-Agent verification endpoint.
-- One Next.js deployment, one PostgreSQL database, one blockchain RPC provider.
+- One Next.js deployment, one PostgreSQL database, and one chain adapter selected per supported rail.
 
-**Non-goals for v1:** accounts, organizations, API-key issuance, wallets, signing, payment execution, custody, escrow, refunds, fiat conversion, swaps, subscriptions, compliance, wallet/security scoring, multi-chain support, background workers, webhooks, persistent chain indexing, Redis, queues, a full MCP server, or an elaborate dashboard.
+**Non-goals for this build:** accounts, organizations, API-key issuance, wallets, signing, payment execution, custody, escrow, refunds, fiat conversion, swaps, subscriptions, compliance, wallet/security scoring, chains beyond Base + Arc, background workers, webhooks, persistent chain indexing, Redis, queues, a full MCP server, or an elaborate dashboard.
 
 The architectural principle is:
 
 > **Stateless with respect to the chain; stateful with respect to payment obligations.**
 
-Settle stores declared obligations, observed evidence, and reconciliation history. It does not maintain its own copy of Base.
+Settle stores declared obligations, observed evidence, and reconciliation history. It does not maintain its own copy of either supported chain.
 
 ---
 
@@ -47,25 +47,39 @@ Settle stores declared obligations, observed evidence, and reconciliation histor
 | Unit/service tests | Vitest | 4 | Fast TypeScript tests for deterministic reconciliation logic. |
 | Browser tests | Playwright | 1 | Small number of end-to-end smoke tests for the demo UI and public API. |
 | Hosting | Vercel | managed | Git previews and one production deployment. |
-| Blockchain provider | Alchemy Base RPC | managed | Primary Base source; hidden behind `ChainProvider`. |
+| Blockchain providers | Alchemy Base RPC + Arc JSON-RPC | managed | Chain-specific sources hidden behind `ChainProvider`; provider selection is based on the intent chain. |
 | Package manager | pnpm | 10 | Lockfile-driven deterministic installs. |
 
 Do not add an authentication vendor, Redis, a job service, object storage, an indexer, a second RPC provider, a state-management library, or a UI component framework in v1.
 
 ### Network constants
 
-These are code constants, not environment variables:
+Supported-rail facts are code constants, not request input or environment variables. Provider URLs remain deployment configuration.
 
-- Base mainnet chain ID: `8453`.
+Shared:
+
 - Asset symbol: `USDC`.
-- USDC decimals: `6`.
-- Native Circle USDC on Base: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
-- Default required confirmations: `3`.
-- Allowed confirmation range: `1..64`.
 - Maximum intent lifetime: `7 days`.
 - Maximum JSON request body: `16 KiB`.
 
-Changing the chain, token contract, or decimals is an architecture change.
+Base:
+
+- Chain ID: `8453`.
+- Native Circle USDC: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
+- Accounting precision: `6` decimals.
+- Finality policy: confirmation depth; default `3`, allowed `1..64`.
+- Explorer: `https://basescan.org`.
+
+Arc:
+
+- Chain ID: `5042`.
+- Canonical USDC interface stored on intents: `0x3600000000000000000000000000000000000000`.
+- Complete USDC movement stream is the native/system `Transfer` emitter at `0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE`; the later Arc provider must not also count the 6-decimal ERC-20 event for the same movement.
+- Canonical Settle accounting precision: `18` decimals, matching the complete native/system transfer stream exactly; no rounding or truncation to six decimals.
+- Finality policy: deterministic finality; an included committed transaction is final, represented as required confirmations `1` at the public intent boundary.
+- Explorer: `https://explorer.arc.io`.
+
+Changing a supported chain, USDC interface/emitter, accounting precision, or finality policy is an architecture change.
 
 ---
 
@@ -199,7 +213,7 @@ Index `(payment_intent_id, started_at desc)`.
 - Domain money is always `bigint` token units.
 - PostgreSQL stores token units as `numeric(78,0)`; repositories convert string ⇄ `bigint`.
 - Never use JavaScript `number` for money.
-- Parse and format USDC with six decimals; reject more than six fractional digits.
+- Parse and format USDC at the persisted chain's canonical precision: Base `6` decimals, Arc `18` decimals. Reject excess precision; never round or truncate.
 - Validate EVM addresses with `viem`; store lowercase for equality; format checksum addresses only at response/display boundaries.
 - Store all timestamps as PostgreSQL `timestamptz`; API timestamps are UTC ISO-8601 strings ending in `Z`.
 - Block numbers are `bigint` in TypeScript and `bigint` in PostgreSQL.
@@ -374,13 +388,13 @@ Do not invent scoring, heuristics, ML matching, memo parsing, or “best candida
 
 ### 7.4 Confirmations and status
 
-For a transfer in block `B` with current latest block `L`:
+Finality is chain-specific. For Base, a transfer in block `B` with current latest block `L` uses:
 
 ```text
 confirmations = L - B + 1
 ```
 
-This is Base block confirmation depth only. v1 does not model L1 finality.
+Base keeps its configurable confirmation threshold and does not model L1 finality. Arc uses deterministic finality: once a canonical transfer is included in a committed block it is final, with public `requiredConfirmations = 1`; Settle must not invent a Base-style waiting window for Arc.
 
 Calculate:
 

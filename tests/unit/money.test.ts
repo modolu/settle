@@ -83,3 +83,34 @@ describe("formatUsdcAmount", () => {
     expect(() => formatUsdcAmount(-1n)).toThrow(RangeError);
   });
 });
+
+describe("Arc USDC accounting", () => {
+  it.each([
+    ["0.000000000000000001", 1n],
+    ["0.10", 100_000_000_000_000_000n],
+    ["1", 1_000_000_000_000_000_000n],
+    ["12.123456789012345678", 12_123_456_789_012_345_678n],
+  ])("parses %s exactly at 18 decimals", (input, units) => {
+    expect(parseUsdcAmount(input, "arc")).toEqual({ ok: true, units });
+  });
+
+  it("rejects precision beyond 18 decimals without truncating", () => {
+    const result = parseUsdcAmount("1.0000000000000000001", "arc");
+    expect(result.ok).toBe(false);
+  });
+
+  it.each([
+    [1n, "0.000000000000000001"],
+    [100_000_000_000_000_000n, "0.10"],
+    [1_000_000_000_000_000_000n, "1.00"],
+    [12_123_456_789_012_345_678n, "12.123456789012345678"],
+  ])("formats %s Arc units → %s", (units, expected) => {
+    expect(formatUsdcAmount(units, "arc")).toBe(expected);
+  });
+
+  it("keeps the original Base default behavior unchanged", () => {
+    expect(parseUsdcAmount("0.000001")).toEqual({ ok: true, units: 1n });
+    expect(parseUsdcAmount("0.0000001").ok).toBe(false);
+    expect(formatUsdcAmount(1n)).toBe("0.000001");
+  });
+});

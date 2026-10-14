@@ -7,6 +7,7 @@
 import { z } from "zod";
 
 import { formatUsdcAmount, parseUsdcAmount } from "@/domain/money";
+import type { SupportedChain } from "@/domain/chains";
 import {
   ASSET,
   CHAIN,
@@ -118,7 +119,7 @@ export interface PaymentIntentResponse {
   readonly id: string;
   readonly status: PaymentStatus;
   readonly externalReference: string | null;
-  readonly chain: typeof CHAIN;
+  readonly chain: SupportedChain;
   readonly asset: typeof ASSET;
   readonly expectedAmount: string;
   readonly receivedAmount: string;
