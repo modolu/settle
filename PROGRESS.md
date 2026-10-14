@@ -56,6 +56,8 @@
 - No Arc-mainnet USDC is currently available in the user's wallets.
 - Current official Arc Portal guidance supports depositing USDC from supported networks via Circle CCTP; Arc fees are paid in USDC. This gives us a plausible funding route without changing Settle or handling private keys.
 - No bridge/deposit/purchase/funding action has been executed. We will verify exact route, quote, minimums, fee, and wallet balances before the real-payment milestone and stop for user approval.
+- Live balance check for the two proof wallets: both are `0` native USDC on Arc. The prior Base payer holds only `0.000200` USDC on Base, so its current balance is not enough to fund Arc via CCTP. Direct Arc Portal/Transak onramp is the simplest current funding path if available to the user; otherwise acquire more USDC on a supported source chain and bridge.
+- Current Arc RPC gas quote implies roughly `0.00042 USDC` for a plain 21,000-gas native transfer at the observed gas price; treat this as a moving estimate, not a guarantee.
 
 ## Later
 - API keys/accounts/teams.
