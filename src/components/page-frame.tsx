@@ -28,7 +28,7 @@ export function PageFrame({ children }: { readonly children: ReactNode }) {
       </main>
       <footer className="border-t border-line">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-5 py-4 text-xs text-ink-muted sm:px-8">
-          <p>Read-only reconciliation of native USDC on Base. Settle never holds keys or sends payments.</p>
+          <p>Read-only USDC reconciliation on Base + Arc. Settle never holds keys or sends payments.</p>
           <p className="font-mono">
             <a href="/health" className="underline underline-offset-4">
               GET /health

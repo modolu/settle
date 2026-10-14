@@ -225,7 +225,7 @@ export function PaymentInspector({ id }: { readonly id: string }) {
       ) : null}
 
       <section aria-label={`Payment status: ${statusCopy.label}`} className="flex flex-col gap-4">
-        <PaymentStatusHero status={intent.status} reconciling={reconciling} />
+        <PaymentStatusHero status={intent.status} reconciling={reconciling} chain={intent.chain} />
         <PaymentSummary intent={intent} />
       </section>
 
@@ -241,10 +241,10 @@ export function PaymentInspector({ id }: { readonly id: string }) {
           <h2 id="evidence-heading" className="text-xs font-medium tracking-[0.18em] text-ink-muted uppercase">
             Onchain evidence
           </h2>
-          <p className="text-xs text-ink-muted">Native USDC transfers to the recipient observed inside the payment window.</p>
+          <p className="text-xs text-ink-muted">Canonical USDC transfers to the recipient observed on {intent.chain === "arc" ? "Arc" : "Base"} inside the payment window.</p>
         </div>
         {evidence.error !== null ? <ErrorNotice error={evidence.error} onRetry={() => void loadEvidence()} retrying={evidence.loading} /> : null}
-        <EvidenceList evidence={evidence.items} loading={evidence.loading} truncated={evidence.truncated} />
+        <EvidenceList chain={intent.chain} evidence={evidence.items} loading={evidence.loading} truncated={evidence.truncated} />
       </section>
 
       <section aria-labelledby="api-heading" className="flex flex-col gap-3">

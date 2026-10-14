@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { hasHorizontalOverflow } from "./fixtures";
 
 test.describe("home", () => {
-  test("loads with Settle positioning, the fixed rail, and a usable form", async ({ page }) => {
+  test("loads with Settle positioning, the Base + Arc rail selector, and a usable form", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
@@ -16,8 +16,9 @@ test.describe("home", () => {
     expect(response?.status()).toBe(200);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Payment truth for autonomous agents.");
     await expect(page.getByText("The API is the product.")).toBeVisible();
-    await expect(page.getByText("Base", { exact: true })).toBeVisible();
-    await expect(page.getByText("USDC (native)")).toBeVisible();
+    await expect(page.getByLabel("Network")).toHaveValue("base");
+    await expect(page.getByLabel("Network").locator("option")).toHaveCount(2);
+    await expect(page.getByText("USDC", { exact: true })).toBeVisible();
     for (const step of ["Declare", "Pay", "Reconcile", "Verify"]) {
       await expect(page.getByText(step, { exact: true })).toBeVisible();
     }
@@ -26,7 +27,7 @@ test.describe("home", () => {
     await expect(page.getByLabel("Recipient address")).toBeEditable();
     await expect(page.getByLabel("Payment window closes")).toBeEditable();
     await expect(page.getByRole("button", { name: "Create payment intent" })).toBeEnabled();
-    await expect(page.locator("select")).toHaveCount(0);
+    await expect(page.locator("select")).toHaveCount(1);
 
     expect(await hasHorizontalOverflow(page)).toBe(false);
     expect(errors).toEqual([]);

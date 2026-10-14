@@ -1,14 +1,15 @@
 import type { ReactNode } from "react";
 
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 import type { PaymentIntentResponse } from "@/lib/public-api";
 
 import { explorerAddressUrl, formatUtc } from "./format";
 
-function AddressValue({ address }: { readonly address: string | null }) {
+function AddressValue({ address, chain }: { readonly address: string | null; readonly chain: SupportedChain }) {
   if (address === null) {
     return <span className="text-ink-muted">Not declared — single-sender matching</span>;
   }
-  const url = explorerAddressUrl(address);
+  const url = explorerAddressUrl(address, chain);
   return url === null ? (
     <span className="font-mono break-all">{address}</span>
   ) : (
@@ -39,14 +40,18 @@ export function PaymentDetails({ intent }: { readonly intent: PaymentIntentRespo
   return (
     <dl className="min-w-0 divide-y divide-line rounded-md border border-line bg-surface px-5">
       <Row label="Payer">
-        <AddressValue address={intent.payer} />
+        <AddressValue address={intent.payer} chain={intent.chain} />
       </Row>
       <Row label="Recipient">
-        <AddressValue address={intent.recipient} />
+        <AddressValue address={intent.recipient} chain={intent.chain} />
       </Row>
       <Row label="External reference">{intent.externalReference ?? <span className="text-ink-muted">—</span>}</Row>
-      <Row label="Required confirmations">
-        <span className="font-mono">{intent.requiredConfirmations}</span>
+      <Row label="Finality">
+        {intent.chain === "arc" ? (
+          <span>Deterministic · final on inclusion</span>
+        ) : (
+          <span><span className="font-mono">{intent.requiredConfirmations}</span> confirmations required</span>
+        )}
       </Row>
       <Row label="Match confidence">{CONFIDENCE_LABEL[intent.matchConfidence]}</Row>
       <Row label="Paid at">{intent.paidAt === null ? <span className="text-ink-muted">—</span> : <span className="font-mono">{formatUtc(intent.paidAt)}</span>}</Row>
@@ -57,7 +62,7 @@ export function PaymentDetails({ intent }: { readonly intent: PaymentIntentRespo
         <span className="font-mono">{formatUtc(intent.expiresAt)}</span>
       </Row>
       <Row label="Network · asset">
-        <span>Base · native USDC</span>
+        <span>{getChainDefinition(intent.chain).displayName} · USDC</span>
       </Row>
       <Row label="Intent ID">
         <span className="font-mono break-all">{intent.id}</span>

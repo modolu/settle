@@ -32,8 +32,8 @@
 5. **Provider routing** — DONE
 6. **Arc provider** — DONE
 7. **Arc reconciliation + critical tests** — DONE
-8. **Minimal UI** — IN PROGRESS
-9. **MILESTONE: local Base + Arc demo / full checks** — TODO
+8. **Minimal UI** — DONE
+9. **MILESTONE: local Base + Arc demo / full checks** — IN PROGRESS
 10. **Separate production setup** — TODO (requires explicit approval before deployment/account-resource actions)
 11. **MILESTONE: real Arc payment proof** — TODO (hard stop before signature/broadcast)
 12. **Submission polish / final regression / demo** — TODO
@@ -73,6 +73,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 8/12.
+- Current phase: Task 9/12 milestone.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Tasks 3–7 complete as one vertical slice. Full Vitest: 537 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Arc public RPC smoke returned chain id 5042 and a live head. Forward migration `0001_puzzling_hiroim.sql` generated but not applied to any database.
+- Status: ON TRACK — Task 8 complete. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. UI now selects Base/Arc, locks Arc finality to 1, validates chain precision, and renders chain-aware explorer/finality details. Forward migration remains unapplied until isolated Arc infrastructure is approved.

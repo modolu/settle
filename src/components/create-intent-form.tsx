@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 
+import type { SupportedChain } from "@/domain/chains";
 import { describeApiError, publicApi } from "@/lib/public-api";
 
 import { ApiCall } from "./api-call";
@@ -21,6 +22,7 @@ import {
 import { useHydrated, useOrigin } from "./use-browser";
 
 const EMPTY: CreateIntentFormValues = {
+  chain: "base",
   amount: "",
   recipient: "",
   payer: "",
@@ -88,7 +90,7 @@ export function CreateIntentForm() {
     expiresAt: values.expiresAt !== "" ? values.expiresAt : hydrated ? defaultExpiry : "",
   };
 
-  function update(name: CreateIntentField, value: string) {
+  function update<K extends CreateIntentField>(name: K, value: CreateIntentFormValues[K]) {
     setValues((current) => ({ ...current, [name]: value }));
     setFieldErrors((current) => {
       if (current[name] === undefined) {
@@ -96,6 +98,23 @@ export function CreateIntentForm() {
       }
       const next = { ...current };
       delete next[name];
+      return next;
+    });
+  }
+
+  function updateChain(chain: SupportedChain) {
+    setValues((current) => ({
+      ...current,
+      chain,
+      requiredConfirmations: chain === "arc" ? "1" : current.requiredConfirmations === "1" ? DEFAULT_REQUIRED_CONFIRMATIONS : current.requiredConfirmations,
+    }));
+    setFieldErrors((current) => {
+      const next = { ...current };
+      delete next.chain;
+      delete next.amount;
+      delete next.recipient;
+      delete next.payer;
+      delete next.requiredConfirmations;
       return next;
     });
   }
@@ -134,13 +153,23 @@ export function CreateIntentForm() {
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-2 lg:gap-12">
       <form onSubmit={(event) => void onSubmit(event)} noValidate className="flex min-w-0 flex-col gap-5" aria-busy={submitting}>
         <div className="grid grid-cols-2 gap-3 rounded-md border border-line bg-surface-muted px-4 py-3 text-sm">
-          <div>
-            <p className="text-xs tracking-[0.12em] text-ink-muted uppercase">Network</p>
-            <p className="font-medium text-ink">Base</p>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="settle-network" className="text-xs tracking-[0.12em] text-ink-muted uppercase">Network</label>
+            <select
+              id="settle-network"
+              name="chain"
+              value={values.chain}
+              onChange={(event) => updateChain(event.target.value as SupportedChain)}
+              className="rounded border border-line-strong bg-surface px-2 py-1.5 font-medium text-ink"
+            >
+              <option value="base">Base</option>
+              <option value="arc">Arc</option>
+            </select>
           </div>
           <div>
             <p className="text-xs tracking-[0.12em] text-ink-muted uppercase">Asset</p>
-            <p className="font-medium text-ink">USDC (native)</p>
+            <p className="mt-2 font-medium text-ink">USDC</p>
+            <p className="mt-0.5 text-xs text-ink-muted">{values.chain === "arc" ? "Native/system settlement" : "Native Circle USDC"}</p>
           </div>
         </div>
 
@@ -159,7 +188,7 @@ export function CreateIntentForm() {
           )}
         </Field>
 
-        <Field name="recipient" label="Recipient address" hint="The Base address that should receive the USDC." error={fieldErrors.recipient}>
+        <Field name="recipient" label="Recipient address" hint={`The ${values.chain === "arc" ? "Arc" : "Base"} address that should receive the USDC.`} error={fieldErrors.recipient}>
           {(props) => (
             <input
               {...props}
@@ -213,13 +242,19 @@ export function CreateIntentForm() {
               />
             )}
           </Field>
-          <Field name="requiredConfirmations" label="Confirmations" hint="1–64, default 3." error={fieldErrors.requiredConfirmations}>
+          <Field
+            name="requiredConfirmations"
+            label="Confirmations"
+            hint={values.chain === "arc" ? "Arc is deterministic: final on inclusion." : "1–64, default 3."}
+            error={fieldErrors.requiredConfirmations}
+          >
             {(props) => (
               <input
                 {...props}
                 name="requiredConfirmations"
                 inputMode="numeric"
-                value={values.requiredConfirmations}
+                value={values.chain === "arc" ? "1" : values.requiredConfirmations}
+                disabled={values.chain === "arc"}
                 onChange={(event) => update("requiredConfirmations", event.target.value)}
                 className={monoInputClass}
               />

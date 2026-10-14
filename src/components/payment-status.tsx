@@ -1,3 +1,4 @@
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 import { STATUS_COPY, type PaymentStatus } from "@/lib/public-api";
 
 const STATUS_CLASS: Readonly<Record<PaymentStatus, string>> = {
@@ -25,7 +26,7 @@ export function StatusBadge({ status }: { readonly status: PaymentStatus }) {
 }
 
 /** The inspector's headline: large status word plus its one-line meaning. */
-export function PaymentStatusHero({ status, reconciling }: { readonly status: PaymentStatus; readonly reconciling: boolean }) {
+export function PaymentStatusHero({ status, reconciling, chain = "base" }: { readonly status: PaymentStatus; readonly reconciling: boolean; readonly chain?: SupportedChain }) {
   const copy = STATUS_COPY[status];
   return (
     <div data-status={status} className={`rounded-md border px-5 py-4 ${STATUS_CLASS[status]}`}>
@@ -36,7 +37,7 @@ export function PaymentStatusHero({ status, reconciling }: { readonly status: Pa
       </p>
       <p className="mt-2 text-sm text-ink">{copy.explanation}</p>
       <p role="status" aria-live="polite" className="mt-1 min-h-4 text-xs text-ink-muted">
-        {reconciling ? "Reconciling against Base…" : ""}
+        {reconciling ? `Reconciling against ${getChainDefinition(chain).displayName}…` : ""}
       </p>
     </div>
   );

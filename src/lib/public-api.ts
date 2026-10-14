@@ -4,6 +4,7 @@
  * privileged path, no server-side shortcut. Safe to import from client
  * components — it has no server-only dependencies.
  */
+import type { SupportedChain } from "@/domain/chains";
 import type { PaymentStatus, TransferAssociation } from "@/domain/payment-intent";
 import type { ErrorCode, ErrorEnvelope } from "@/lib/errors";
 import type { EvidenceItemResponse, EvidenceResponse } from "@/validation/evidence";
@@ -82,7 +83,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<ApiResu
 }
 
 export interface CreatePaymentIntentRequest {
-  readonly chain: "base";
+  readonly chain: SupportedChain;
   readonly asset: "USDC";
   readonly amount: string;
   readonly recipient: string;
@@ -129,7 +130,7 @@ export const STATUS_COPY: Readonly<Record<PaymentStatus, StatusCopy>> = {
   pending: { label: "Pending", explanation: "No matching payment has been observed yet.", glyph: "○" },
   detected: {
     label: "Detected",
-    explanation: "A matching transfer exists but has not reached the required confirmation depth.",
+    explanation: "A matching transfer exists but has not reached the rail’s required finality threshold.",
     glyph: "◔",
   },
   partial: { label: "Partial", explanation: "Part of the expected payment has been confirmed.", glyph: "◑" },
@@ -168,7 +169,7 @@ export function describeApiError(error: ApiError): ErrorCopy {
       return { title: "Invalid address", detail: error.message };
     case "UNSUPPORTED_CHAIN":
     case "UNSUPPORTED_ASSET":
-      return { title: "Unsupported rail", detail: "Settle currently reconciles native USDC on Base only." };
+      return { title: "Unsupported rail", detail: "Settle currently reconciles USDC on Base and Arc only." };
     case "INTENT_NOT_FOUND":
       return { title: "Payment intent not found", detail: "No payment intent exists with this ID." };
     case "RATE_LIMITED":
@@ -177,7 +178,7 @@ export function describeApiError(error: ApiError): ErrorCopy {
       return {
         title: "Blockchain evidence unavailable",
         detail:
-          "Settle could not retrieve evidence from Base right now. The last known payment state is shown unchanged; this is not a “no payment found” result. Retry shortly.",
+          "Settle could not retrieve onchain evidence right now. The last known payment state is shown unchanged; this is not a “no payment found” result. Retry shortly.",
       };
     case "UPSTREAM_INVALID_RESPONSE":
       return {

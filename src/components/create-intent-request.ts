@@ -3,9 +3,11 @@
  * (a convenience, never a replacement for server validation), request-body
  * construction, and mapping server errors back onto fields.
  */
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 import type { ApiError, CreatePaymentIntentRequest } from "@/lib/public-api";
 
 export interface CreateIntentFormValues {
+  readonly chain: SupportedChain;
   readonly amount: string;
   readonly recipient: string;
   readonly payer: string;
@@ -18,7 +20,6 @@ export type CreateIntentField = keyof CreateIntentFormValues;
 export type FieldErrors = Partial<Record<CreateIntentField, string>>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const AMOUNT = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
 const MAX_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const DEFAULT_REQUIRED_CONFIRMATIONS = "3";
@@ -41,23 +42,26 @@ export function defaultExpiryLocal(now: Date = new Date()): string {
 
 export function validateCreateIntentForm(values: CreateIntentFormValues, now: Date = new Date()): FieldErrors {
   const errors: FieldErrors = {};
+  const definition = getChainDefinition(values.chain);
   const amount = values.amount.trim();
+  const amountMatch = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(amount);
+  const fractionDigits = amountMatch?.[2]?.length ?? 0;
   if (amount === "") {
     errors.amount = "Enter the expected amount.";
-  } else if (!AMOUNT.test(amount) || Number(amount) === 0) {
-    errors.amount = "Use a positive decimal with at most 6 decimal places, e.g. 25.00.";
+  } else if (amountMatch === null || fractionDigits > definition.usdcDecimals || /^0(?:\.0+)?$/.test(amount)) {
+    errors.amount = `Use a positive decimal with at most ${definition.usdcDecimals} decimal places, e.g. 25.00.`;
   }
 
   const recipient = values.recipient.trim();
   if (recipient === "") {
     errors.recipient = "Enter the recipient address.";
   } else if (!ADDRESS.test(recipient)) {
-    errors.recipient = "Must be a 0x-prefixed, 40-character hexadecimal Base address.";
+    errors.recipient = `Must be a 0x-prefixed, 40-character hexadecimal ${definition.displayName} address.`;
   }
 
   const payer = values.payer.trim();
   if (payer !== "" && !ADDRESS.test(payer)) {
-    errors.payer = "Must be a 0x-prefixed, 40-character hexadecimal Base address.";
+    errors.payer = `Must be a 0x-prefixed, 40-character hexadecimal ${definition.displayName} address.`;
   }
 
   const iso = localDateTimeToIso(values.expiresAt);
@@ -73,7 +77,11 @@ export function validateCreateIntentForm(values: CreateIntentFormValues, now: Da
   }
 
   const confirmations = values.requiredConfirmations.trim();
-  if (confirmations !== "" && !/^(?:[1-9]|[1-5][0-9]|6[0-4])$/.test(confirmations)) {
+  if (values.chain === "arc") {
+    if (confirmations !== "" && confirmations !== "1") {
+      errors.requiredConfirmations = "Arc is final on inclusion, so confirmations must be 1.";
+    }
+  } else if (confirmations !== "" && !/^(?:[1-9]|[1-5][0-9]|6[0-4])$/.test(confirmations)) {
     errors.requiredConfirmations = "Use a whole number between 1 and 64.";
   }
 
@@ -87,7 +95,7 @@ export function validateCreateIntentForm(values: CreateIntentFormValues, now: Da
 export function buildCreateIntentRequest(values: CreateIntentFormValues): CreatePaymentIntentRequest {
   const iso = localDateTimeToIso(values.expiresAt);
   const body: {
-    chain: "base";
+    chain: SupportedChain;
     asset: "USDC";
     amount: string;
     recipient: string;
@@ -96,7 +104,7 @@ export function buildCreateIntentRequest(values: CreateIntentFormValues): Create
     externalReference?: string;
     requiredConfirmations?: number;
   } = {
-    chain: "base",
+    chain: values.chain,
     asset: "USDC",
     amount: values.amount.trim(),
     recipient: values.recipient.trim(),
@@ -111,13 +119,16 @@ export function buildCreateIntentRequest(values: CreateIntentFormValues): Create
     body.externalReference = externalReference;
   }
   const confirmations = values.requiredConfirmations.trim();
-  if (confirmations !== "") {
+  if (values.chain === "arc") {
+    body.requiredConfirmations = 1;
+  } else if (confirmations !== "") {
     body.requiredConfirmations = Number(confirmations);
   }
   return body;
 }
 
 const FIELD_NAMES: ReadonlySet<string> = new Set<CreateIntentField>([
+  "chain",
   "amount",
   "recipient",
   "payer",

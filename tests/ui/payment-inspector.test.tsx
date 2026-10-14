@@ -185,6 +185,35 @@ describe("PaymentInspector", () => {
     expect(link.getAttribute("rel")).toContain("noopener");
   });
 
+  it("renders Arc finality and Arc explorer links from the persisted chain", async () => {
+    const tx = `0x${"d".repeat(64)}`;
+    fakeApi([
+      {
+        method: "GET",
+        path: GET_INTENT,
+        reply: () => jsonResponse(intent({
+          chain: "arc",
+          status: "paid",
+          expectedAmount: "0.10",
+          receivedAmount: "0.10",
+          remainingAmount: "0.00",
+          requiredConfirmations: 1,
+          matchConfidence: "exact_payer",
+        })),
+      },
+      {
+        method: "GET",
+        path: GET_EVIDENCE,
+        reply: () => jsonResponse({ evidence: [evidenceRow({ transactionHash: tx, amount: "0.10", confirmations: 1 })], nextCursor: null }),
+      },
+    ]);
+    render(<PaymentInspector id={ID} />);
+    await screen.findByText(STATUS_COPY.paid.explanation);
+    expect(screen.getByText("Deterministic · final on inclusion")).toBeTruthy();
+    expect(screen.getByText("Arc · USDC")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(`a[href="https://explorer.arc.io/tx/${tx}"]`)).not.toBeNull());
+  });
+
   it("ambiguous: received stays the API's 0.00 even though candidate rows sum to 105.00", async () => {
     fakeApi([
       { method: "GET", path: GET_INTENT, reply: () => jsonResponse(intent({ status: "ambiguous", payer: null, matchConfidence: "ambiguous", receivedAmount: "0.00", remainingAmount: "25.00" })) },

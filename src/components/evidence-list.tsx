@@ -1,3 +1,4 @@
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 import { ASSOCIATION_COPY, type EvidenceItemResponse, type TransferAssociation } from "@/lib/public-api";
 
 import { explorerAddressUrl, explorerTxUrl, formatUtc, groupAmount, shortenHex } from "./format";
@@ -20,8 +21,8 @@ function AssociationBadge({ association }: { readonly association: TransferAssoc
   );
 }
 
-function HashLink({ hash }: { readonly hash: string }) {
-  const url = explorerTxUrl(hash);
+function HashLink({ hash, chain }: { readonly hash: string; readonly chain: SupportedChain }) {
+  const url = explorerTxUrl(hash, chain);
   const short = shortenHex(hash);
   return url === null ? (
     <span className="font-mono" title={hash}>
@@ -32,7 +33,7 @@ function HashLink({ hash }: { readonly hash: string }) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      title={`${hash} — open on Basescan`}
+      title={`${hash} — open on ${getChainDefinition(chain).displayName} explorer`}
       className="font-mono underline decoration-line-strong underline-offset-4"
     >
       {short}
@@ -40,8 +41,8 @@ function HashLink({ hash }: { readonly hash: string }) {
   );
 }
 
-function AddressText({ address }: { readonly address: string }) {
-  const url = explorerAddressUrl(address);
+function AddressText({ address, chain }: { readonly address: string; readonly chain: SupportedChain }) {
+  const url = explorerAddressUrl(address, chain);
   const short = shortenHex(address, 8, 4);
   return url === null ? (
     <span className="font-mono" title={address}>
@@ -55,13 +56,14 @@ function AddressText({ address }: { readonly address: string }) {
 }
 
 interface EvidenceListProps {
+  readonly chain: SupportedChain;
   readonly evidence: readonly EvidenceItemResponse[];
   readonly loading: boolean;
   readonly truncated: boolean;
 }
 
 /** Ledger of observed transfers: a table from `lg` up, stacked cards below. */
-export function EvidenceList({ evidence, loading, truncated }: EvidenceListProps) {
+export function EvidenceList({ chain, evidence, loading, truncated }: EvidenceListProps) {
   if (loading && evidence.length === 0) {
     return (
       <div aria-busy="true" className="rounded-md border border-line bg-surface px-5 py-6">
@@ -75,7 +77,7 @@ export function EvidenceList({ evidence, loading, truncated }: EvidenceListProps
       <div className="rounded-md border border-dashed border-line-strong bg-surface px-5 py-8 text-center">
         <p className="text-sm font-medium text-ink">No matching onchain evidence observed yet.</p>
         <p className="mt-1 text-xs text-ink-muted">
-          Evidence appears here once a reconciliation finds native USDC transfers to the recipient inside the payment window.
+          Evidence appears here once a reconciliation finds canonical USDC transfers to the recipient inside the payment window.
         </p>
       </div>
     );
@@ -114,15 +116,15 @@ export function EvidenceList({ evidence, loading, truncated }: EvidenceListProps
                 className={row.association === "orphaned" ? "text-ink-muted" : ""}
               >
                 <td className="px-4 py-2.5 whitespace-nowrap">
-                  <HashLink hash={row.transactionHash} />
+                  <HashLink hash={row.transactionHash} chain={chain} />
                   <span className="ml-1 font-mono text-xs text-ink-faint">#{row.logIndex}</span>
                 </td>
                 <td className="px-4 py-2.5 text-right font-mono tabular-nums">{groupAmount(row.amount)}</td>
                 <td className="px-4 py-2.5 whitespace-nowrap">
-                  <AddressText address={row.from} />
+                  <AddressText address={row.from} chain={chain} />
                 </td>
                 <td className="px-4 py-2.5 whitespace-nowrap">
-                  <AddressText address={row.to} />
+                  <AddressText address={row.to} chain={chain} />
                 </td>
                 <td className="px-4 py-2.5 text-right font-mono tabular-nums">{row.blockNumber}</td>
                 <td className="px-4 py-2.5 text-right font-mono tabular-nums">{row.confirmations}</td>
@@ -152,15 +154,15 @@ export function EvidenceList({ evidence, loading, truncated }: EvidenceListProps
             <dl className="mt-2 grid grid-cols-[6rem_minmax(0,1fr)] gap-y-1 text-xs">
               <dt className="text-ink-muted">Transaction</dt>
               <dd>
-                <HashLink hash={row.transactionHash} /> <span className="font-mono text-ink-faint">#{row.logIndex}</span>
+                <HashLink hash={row.transactionHash} chain={chain} /> <span className="font-mono text-ink-faint">#{row.logIndex}</span>
               </dd>
               <dt className="text-ink-muted">From</dt>
               <dd>
-                <AddressText address={row.from} />
+                <AddressText address={row.from} chain={chain} />
               </dd>
               <dt className="text-ink-muted">To</dt>
               <dd>
-                <AddressText address={row.to} />
+                <AddressText address={row.to} chain={chain} />
               </dd>
               <dt className="text-ink-muted">Block</dt>
               <dd className="font-mono">

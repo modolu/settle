@@ -5,8 +5,8 @@ export const dynamic = "force-dynamic";
 
 const FLOW = [
   { step: "Declare", detail: "An agent creates an expected USDC payment: amount, recipient, optional payer, expiry." },
-  { step: "Pay", detail: "The payer sends native USDC on Base, entirely outside Settle." },
-  { step: "Reconcile", detail: "Settle reads canonical Transfer logs and confirmation depth on request." },
+  { step: "Pay", detail: "The payer sends USDC on the selected rail, entirely outside Settle." },
+  { step: "Reconcile", detail: "Settle reads canonical chain evidence and applies rail-specific finality on request." },
   { step: "Verify", detail: "A deterministic status and transaction evidence drive the agent's next step." },
 ] as const;
 
@@ -18,7 +18,7 @@ export default function HomePage() {
           <p className="text-xs font-medium tracking-[0.18em] text-ink-muted uppercase">Settle · read-only reconciliation</p>
           <h1 className="text-4xl font-semibold tracking-tight text-ink sm:text-5xl">Payment truth for autonomous agents.</h1>
           <p className="max-w-xl text-lg text-ink-muted">
-            Create an expected USDC payment. Settle verifies what actually arrived on Base and answers with a status an agent can act on:
+            Create an expected USDC payment on Base or Arc. Settle verifies what actually arrived and answers with a status an agent can act on:
             pending, detected, partial, paid, overpaid, expired or ambiguous.
           </p>
         </div>

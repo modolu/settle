@@ -15,6 +15,7 @@ const RECIPIENT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const PAYER = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
 const valid: CreateIntentFormValues = {
+  chain: "base",
   amount: "25.00",
   recipient: RECIPIENT,
   payer: PAYER,
@@ -24,7 +25,7 @@ const valid: CreateIntentFormValues = {
 };
 
 describe("buildCreateIntentRequest", () => {
-  it("produces the exact POST /v1/payment-intents body with fixed chain and asset", () => {
+  it("produces the exact Base POST /v1/payment-intents body", () => {
     const body = buildCreateIntentRequest(valid);
     expect(body).toEqual({
       chain: "base",
@@ -38,6 +39,15 @@ describe("buildCreateIntentRequest", () => {
     });
     expect(body.expiresAt.endsWith("Z")).toBe(true);
     expect(Object.keys(body)).toEqual(["chain", "asset", "amount", "recipient", "expiresAt", "payer", "externalReference", "requiredConfirmations"]);
+  });
+
+  it("builds Arc requests with deterministic finality fixed to one", () => {
+    expect(buildCreateIntentRequest({ ...valid, chain: "arc", amount: "0.123456789012345678", requiredConfirmations: "" })).toMatchObject({
+      chain: "arc",
+      asset: "USDC",
+      amount: "0.123456789012345678",
+      requiredConfirmations: 1,
+    });
   });
 
   it("omits blank optional fields and trims whitespace", () => {
@@ -72,6 +82,12 @@ describe("validateCreateIntentForm", () => {
   ])("flags %j on %s", (override, field) => {
     const errors = validateCreateIntentForm({ ...valid, ...override }, NOW);
     expect(Object.keys(errors)).toEqual([field]);
+  });
+
+  it("uses chain-specific amount precision and Arc finality validation", () => {
+    expect(validateCreateIntentForm({ ...valid, chain: "arc", amount: "0.123456789012345678", requiredConfirmations: "1" }, NOW)).toEqual({});
+    expect(validateCreateIntentForm({ ...valid, chain: "arc", amount: "1.0000000000000000001", requiredConfirmations: "1" }, NOW).amount).toMatch(/18 decimal/);
+    expect(validateCreateIntentForm({ ...valid, chain: "arc", requiredConfirmations: "3" }, NOW).requiredConfirmations).toMatch(/final on inclusion/);
   });
 
   it("treats a blank payer and confirmations as optional", () => {

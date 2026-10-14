@@ -18,6 +18,10 @@ function fill(label: RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
+function withinOptions(select: HTMLSelectElement): string[] {
+  return Array.from(select.options).map((option) => option.text);
+}
+
 function fillValidForm() {
   fill(/expected amount/i, "25.00");
   fill(/recipient address/i, RECIPIENT);
@@ -40,11 +44,13 @@ afterEach(() => {
 });
 
 describe("CreateIntentForm", () => {
-  it("shows the fixed network and asset and never lets the user pick others", () => {
+  it("offers Base and Arc while keeping USDC as the fixed asset", () => {
     render(<CreateIntentForm />);
-    expect(screen.getByText("Base")).toBeTruthy();
-    expect(screen.getByText("USDC (native)")).toBeTruthy();
-    expect(screen.queryByRole("combobox")).toBeNull();
+    const network = screen.getByRole("combobox", { name: /network/i }) as HTMLSelectElement;
+    expect(network.value).toBe("base");
+    expect(withinOptions(network)).toEqual(["Base", "Arc"]);
+    expect(screen.getByText("USDC", { exact: true })).toBeTruthy();
+    expect(screen.getByText("Native Circle USDC")).toBeTruthy();
   });
 
   it("sends the exact public request and redirects to the inspector on success", async () => {
@@ -68,6 +74,34 @@ describe("CreateIntentForm", () => {
       expiresAt: new Date("2030-01-01T12:00").toISOString(),
       externalReference: "INV-204",
       requiredConfirmations: 3,
+    });
+    vi.useRealTimers();
+  });
+
+  it("switches to Arc, locks deterministic finality to one, and sends the Arc request", async () => {
+    vi.useFakeTimers({ now: new Date("2029-12-31T00:00:00.000Z"), toFake: ["Date"] });
+    fetchMock.mockResolvedValue(jsonResponse({ id: "pi_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", status: "pending" }, 201));
+    render(<CreateIntentForm />);
+    fireEvent.change(screen.getByRole("combobox", { name: /network/i }), { target: { value: "arc" } });
+    expect(screen.getByText("Native/system settlement")).toBeTruthy();
+    const confirmations = screen.getByLabelText(/confirmations/i) as HTMLInputElement;
+    expect(confirmations.value).toBe("1");
+    expect(confirmations.disabled).toBe(true);
+    fill(/expected amount/i, "0.123456789012345678");
+    fill(/recipient address/i, RECIPIENT);
+    fill(/payer address/i, PAYER);
+    fill(/payment window closes/i, "2030-01-01T12:00");
+    fireEvent.click(screen.getByRole("button", { name: /create payment intent/i }));
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      chain: "arc",
+      asset: "USDC",
+      amount: "0.123456789012345678",
+      recipient: RECIPIENT,
+      payer: PAYER,
+      requiredConfirmations: 1,
     });
     vi.useRealTimers();
   });

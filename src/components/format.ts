@@ -1,15 +1,16 @@
 /** Presentation helpers for the inspector. Pure; no monetary arithmetic happens here. */
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 
 const TX_HASH = /^0x[0-9a-f]{64}$/i;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
-/** Deterministic Base explorer link for a transaction hash, or null when the hash is not well-formed. */
-export function explorerTxUrl(txHash: string): string | null {
-  return TX_HASH.test(txHash) ? `https://basescan.org/tx/${txHash.toLowerCase()}` : null;
+/** Deterministic explorer link for a transaction hash, or null when malformed. */
+export function explorerTxUrl(txHash: string, chain: SupportedChain = "base"): string | null {
+  return TX_HASH.test(txHash) ? `${getChainDefinition(chain).explorerBaseUrl}/tx/${txHash.toLowerCase()}` : null;
 }
 
-export function explorerAddressUrl(address: string): string | null {
-  return ADDRESS.test(address) ? `https://basescan.org/address/${address}` : null;
+export function explorerAddressUrl(address: string, chain: SupportedChain = "base"): string | null {
+  return ADDRESS.test(address) ? `${getChainDefinition(chain).explorerBaseUrl}/address/${address}` : null;
 }
 
 /** `0x7db45d69…61b0f5` */
