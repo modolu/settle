@@ -58,6 +58,7 @@
 - No bridge/deposit/purchase/funding action has been executed. We will verify exact route, quote, minimums, fee, and wallet balances before the real-payment milestone and stop for user approval.
 - Live balance check for the two proof wallets: both are `0` native USDC on Arc. The prior Base payer holds only `0.000200` USDC on Base, so its current balance is not enough to fund Arc via CCTP. Direct Arc Portal/Transak onramp is the simplest current funding path if available to the user; otherwise acquire more USDC on a supported source chain and bridge.
 - Current Arc RPC gas quote implies roughly `0.00042 USDC` for a plain 21,000-gas native transfer at the observed gas price; treat this as a moving estimate, not a guarantee.
+- Funding re-check: payer `0x389b48BE...df57` now holds `0.474905` native USDC on Arc; recipient is `0`. Fresh production proof intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` expects exactly `0.10 USDC`, expires `2026-10-15T01:57:33Z`, and remains pending. Estimated plain-transfer gas is 21,000 at the observed gas price, about `0.000420000024213 USDC`; balance is sufficient. Hard stop remains in force before signature/broadcast.
 
 ## Later
 - API keys/accounts/teams.
