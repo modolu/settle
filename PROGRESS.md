@@ -34,8 +34,8 @@
 7. **Arc reconciliation + critical tests** — DONE
 8. **Minimal UI** — DONE
 9. **MILESTONE: local Base + Arc demo / full checks** — DONE
-10. **Separate production setup** — IN PROGRESS (user approved external infrastructure/deployment actions)
-11. **MILESTONE: real Arc payment proof** — TODO (hard stop before signature/broadcast)
+10. **Separate production setup** — DONE
+11. **MILESTONE: real Arc payment proof** — IN PROGRESS (preparing funding/balance/transaction facts; hard stop before signature/broadcast)
 12. **Submission polish / final regression / demo** — TODO
 
 ## Decisions made
@@ -75,4 +75,4 @@
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
 - Current phase: Task 10/12 separate production setup.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 9 milestone approved by the user. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Task 10 started: `arc-microgrants` is pushed, separate Vercel project `settle-arc` exists on Node 24 with public Arc RPC configured, and the frozen X-Agent `/health` still reports review commit `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Isolated Neon provisioning and the Base Alchemy secret are complete. The production branch for `settle-arc` is set to `arc-microgrants`; next step is triggering/verifying the first production deployment and running Base + Arc smoke tests. No secrets are copied into chat or the repo.
+- Status: ON TRACK — Task 10 is complete. `settle-arc.vercel.app` is live on commit `4a40c887b45e0869e86acca76bb76ebaa6044319`; isolated Neon migration is applied. Production smoke created and reconciled an unpaid Base intent (`pi_Ts8bXwqqYBbRCk3c5I1OU-NlvRWkSF4y`) and an unpaid Arc intent (`pi_FrZisk-h4gLBoGT5SJqp3Jfvq36JN7yL`); both remained `pending`, and Arc evidence was empty as expected. The frozen X-Agent `/health` still reports `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Task 11 is now preparing the minimal real Arc-mainnet proof and must stop before any signature/broadcast.
