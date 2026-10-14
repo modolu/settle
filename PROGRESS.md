@@ -43,7 +43,7 @@
 - X-Agent review commit is frozen at `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`.
 - Immutable tag `xagent-submission-2026` was created and pushed at that commit.
 - Arc work uses branch `arc-microgrants`; X-Agent deployment must not be redeployed.
-- Prefer a separate Arc Vercel project and separate Neon DB for isolation. User approved external infrastructure/deployment actions; separate Vercel project `settle-arc` is now created, while the isolated Neon database still needs to be connected/provisioned.
+- Prefer a separate Arc Vercel project and separate Neon DB for isolation. User approved external infrastructure/deployment actions. Vercel project `settle-arc` and isolated Neon database `settle-arc-production` are provisioned; the dual-chain migration is applied and verified on that isolated database.
 - Existing Alchemy Base provider remains intact except minimal shared-interface changes required for routing.
 - No new dependencies unless explicitly approved.
 - Tasks 3–7 were implemented and verified as one coherent vertical slice because accepting Arc at the API before persistence/provider/finality support existed would create an unsafe intermediate state.
@@ -67,7 +67,7 @@
 ## Known issues / workarounds
 - Local shell currently has Node 22.12.0 while `package.json` correctly requires Node 24.x. Do not downgrade the project. Final CI/deployment must use Node 24; existing baseline previously passed under Node 22 with the expected engine warning.
 - `TEST_DATABASE_URL` may be absent locally; if so, DB integration tests are skipped and must be reported as skipped, not passed.
-- Disk space is limited; avoid duplicate dependency trees or unnecessary installs.
+- Disk space is limited; avoid duplicate dependency trees or unnecessary installs. Generated project caches were cleaned after a failed Vercel CLI download filled the disk; repository source remains untouched.
 - Coding-agent blocker at ~22:09 WAT: Claude Code headless hung on three checks; Codex CLI is authenticated but usage-limited until 2026-10-15 02:08 WAT. User explicitly approved direct implementation through Desktop Commander, so this is no longer a build blocker.
 - Local `pnpm` cannot run under the current Node 22.12.0 because pnpm 10.34.5 requires >=22.13; verification currently invokes committed local binaries directly (`./node_modules/.bin/...`) without changing system Node or installing anything.
 
@@ -75,4 +75,4 @@
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
 - Current phase: Task 10/12 separate production setup.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 9 milestone approved by the user. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Task 10 started: `arc-microgrants` is pushed, separate Vercel project `settle-arc` exists on Node 24 with public Arc RPC configured, and the frozen X-Agent `/health` still reports review commit `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Remaining setup blocker is isolated Neon provisioning plus the Base Alchemy secret for the new Vercel project; no secrets are copied into chat or the repo.
+- Status: ON TRACK — Task 9 milestone approved by the user. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Task 10 started: `arc-microgrants` is pushed, separate Vercel project `settle-arc` exists on Node 24 with public Arc RPC configured, and the frozen X-Agent `/health` still reports review commit `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Isolated Neon provisioning and the Base Alchemy secret are complete. The production branch for `settle-arc` is set to `arc-microgrants`; next step is triggering/verifying the first production deployment and running Base + Arc smoke tests. No secrets are copied into chat or the repo.
