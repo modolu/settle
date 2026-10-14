@@ -11,7 +11,7 @@ export const GET = apiRoute(
   async ({ request, requestId }, context: RouteContext<"/v1/payment-intents/[id]/evidence">) => {
     const { id } = await context.params;
     const query = parseEvidenceQuery(new URL(request.url).searchParams);
-    const page = await getContainer().getPaymentEvidence(parsePaymentIntentId(id), query);
-    return jsonResponse(toEvidenceResponse(page), { requestId });
+    const result = await getContainer().getPaymentEvidence(parsePaymentIntentId(id), query);
+    return jsonResponse(toEvidenceResponse(result.page, result.chain), { requestId });
   },
 );

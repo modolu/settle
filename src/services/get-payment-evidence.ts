@@ -5,6 +5,7 @@
  */
 import "server-only";
 
+import type { SupportedChain } from "@/domain/chains";
 import { AppError } from "@/lib/errors";
 import type { EvidenceCursor, EvidencePage, PaymentRepository } from "@/ports/payment-repository";
 
@@ -20,11 +21,16 @@ export interface GetPaymentEvidenceOptions {
   readonly cursor: EvidenceCursor | null;
 }
 
+export interface PaymentEvidenceResult {
+  readonly chain: SupportedChain;
+  readonly page: EvidencePage;
+}
+
 export async function getPaymentEvidence(
   id: string,
   options: GetPaymentEvidenceOptions,
   deps: GetPaymentEvidenceDeps,
-): Promise<EvidencePage> {
+): Promise<PaymentEvidenceResult> {
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > MAX_EVIDENCE_LIMIT) {
     throw new AppError("VALIDATION_ERROR", `limit must be an integer between 1 and ${MAX_EVIDENCE_LIMIT}`);
   }
@@ -32,5 +38,5 @@ export async function getPaymentEvidence(
   if (intent === null) {
     throw new AppError("INTENT_NOT_FOUND", "Payment intent not found");
   }
-  return deps.paymentRepository.getEvidencePage(intent.id, options);
+  return { chain: intent.chain, page: await deps.paymentRepository.getEvidencePage(intent.id, options) };
 }

@@ -46,6 +46,7 @@ function expectAppError(fn: () => unknown, code: string, messagePattern?: RegExp
 describe("parseCreatePaymentIntentRequest", () => {
   it("normalizes a full valid request", () => {
     expect(parseCreatePaymentIntentRequest(validRequest, NOW)).toEqual({
+      chain: "base",
       externalReference: "INV-204",
       expectedAmountUnits: 850_000_000n,
       recipientAddress: RECIPIENT.toLowerCase(),
@@ -63,6 +64,36 @@ describe("parseCreatePaymentIntentRequest", () => {
     expect(input.payerAddress).toBeNull();
     expect(input.externalReference).toBeNull();
     expect(input.requiredConfirmations).toBe(3);
+  });
+
+  it("normalizes Arc requests at 18-decimal precision and defaults deterministic finality to one", () => {
+    const input = parseCreatePaymentIntentRequest(
+      {
+        ...validRequest,
+        chain: "arc",
+        amount: "0.123456789012345678",
+        requiredConfirmations: undefined,
+      },
+      NOW,
+    );
+    expect(input).toMatchObject({
+      chain: "arc",
+      expectedAmountUnits: 123_456_789_012_345_678n,
+      requiredConfirmations: 1,
+    });
+  });
+
+  it("rejects Arc precision beyond 18 decimals and confirmation counts above one", () => {
+    expectAppError(
+      () => parseCreatePaymentIntentRequest({ ...validRequest, chain: "arc", amount: "1.0000000000000000001", requiredConfirmations: 1 }, NOW),
+      "VALIDATION_ERROR",
+      /amount/,
+    );
+    expectAppError(
+      () => parseCreatePaymentIntentRequest({ ...validRequest, chain: "arc", amount: "1", requiredConfirmations: 2 }, NOW),
+      "VALIDATION_ERROR",
+      /requiredConfirmations: must be 1 on Arc/,
+    );
   });
 
   it("rejects unknown fields", () => {
@@ -224,6 +255,24 @@ describe("toPaymentIntentResponse", () => {
       expect(response).not.toHaveProperty(key);
     }
     expect(() => JSON.stringify(response)).not.toThrow();
+  });
+
+  it("formats Arc response money using the persisted chain precision", () => {
+    const response = toPaymentIntentResponse({
+      ...intent,
+      chain: "arc",
+      tokenAddress: "0x3600000000000000000000000000000000000000",
+      expectedAmountUnits: 123_456_789_012_345_678n,
+      receivedAmountUnits: 1n,
+      requiredConfirmations: 1,
+    });
+    expect(response).toMatchObject({
+      chain: "arc",
+      expectedAmount: "0.123456789012345678",
+      receivedAmount: "0.000000000000000001",
+      remainingAmount: "0.123456789012345677",
+      requiredConfirmations: 1,
+    });
   });
 
   it("handles a partially received intent and a null payer", () => {

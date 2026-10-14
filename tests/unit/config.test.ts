@@ -23,6 +23,7 @@ describe("loadConfig", () => {
       databaseUrl: secrets.DATABASE_URL,
       databaseUrlUnpooled: secrets.DATABASE_URL_UNPOOLED,
       alchemyBaseRpcUrl: secrets.ALCHEMY_BASE_RPC_URL,
+      arcMainnetRpcUrl: "https://rpc.mainnet.arc.io",
     });
   });
 
@@ -78,7 +79,15 @@ describe("loadConfig", () => {
       databaseUrl: secrets.DATABASE_URL,
       databaseUrlUnpooled: secrets.DATABASE_URL_UNPOOLED,
       alchemyBaseRpcUrl: secrets.ALCHEMY_BASE_RPC_URL,
+      arcMainnetRpcUrl: "https://rpc.mainnet.arc.io",
     });
+  });
+
+  it("allows an Arc RPC override while defaulting to the official public endpoint", () => {
+    expect(loadConfig(secrets).arcMainnetRpcUrl).toBe("https://rpc.mainnet.arc.io");
+    expect(loadConfig({ ...secrets, ARC_MAINNET_RPC_URL: "https://arc-rpc.example" }).arcMainnetRpcUrl).toBe(
+      "https://arc-rpc.example",
+    );
   });
 
   it("derives the test deployment environment from NODE_ENV when not on Vercel", () => {

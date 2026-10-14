@@ -11,6 +11,7 @@ import {
 
 const NOW = new Date("2026-09-17T12:00:00.000Z");
 const valid = {
+  chain: "base" as const,
   expectedAmountUnits: 850_000_000n,
   requiredConfirmations: DEFAULT_REQUIRED_CONFIRMATIONS,
   expiresAt: new Date(NOW.getTime() + 60 * 60 * 1000),
@@ -30,6 +31,13 @@ describe("paymentIntentViolations", () => {
 
   it.each([1, 3, 64])("accepts requiredConfirmations = %d", (requiredConfirmations) => {
     expect(paymentIntentViolations({ ...valid, requiredConfirmations }, NOW)).toEqual([]);
+  });
+
+  it("enforces Arc deterministic finality as exactly one confirmation", () => {
+    expect(paymentIntentViolations({ ...valid, chain: "arc", requiredConfirmations: 1 }, NOW)).toEqual([]);
+    expect(paymentIntentViolations({ ...valid, chain: "arc", requiredConfirmations: 2 }, NOW)).toEqual([
+      { field: "requiredConfirmations", message: "must be 1 on Arc because transactions are final on inclusion" },
+    ]);
   });
 
   it.each([0, 65, -1, 1.5, Number.NaN])("rejects requiredConfirmations = %s", (requiredConfirmations) => {
@@ -63,7 +71,7 @@ describe("paymentIntentViolations", () => {
 
   it("reports every violation at once", () => {
     const violations = paymentIntentViolations(
-      { expectedAmountUnits: 0n, requiredConfirmations: 99, expiresAt: NOW },
+      { chain: "base", expectedAmountUnits: 0n, requiredConfirmations: 99, expiresAt: NOW },
       NOW,
     );
     expect(violations.map((violation) => violation.field)).toEqual([

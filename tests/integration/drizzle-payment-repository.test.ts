@@ -11,6 +11,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createDatabase, type DatabaseHandle } from "@/db/client";
+import { CHAIN_DEFINITIONS } from "@/domain/chains";
 import { paymentIntents } from "@/db/schema";
 import { newPaymentIntentId } from "@/lib/ids";
 import { createDrizzlePaymentRepository } from "@/repositories/drizzle-payment-repository";
@@ -56,6 +57,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository (Neon
     createdIds.push(id);
     return {
       id,
+      chain: "base" as const,
       externalReference: "INV-204",
       expectedAmountUnits: 850_000_000n,
       recipientAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -119,6 +121,24 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository (Neon
     expect((await repository.getPaymentIntentById(tiny.id))?.expectedAmountUnits).toBe(1n);
   });
 
+  it("round-trips an Arc intent with Arc token metadata and 18-decimal units", async () => {
+    const repository = createDrizzlePaymentRepository(handle.db);
+    const created = await repository.createPaymentIntent(
+      newIntent({
+        chain: "arc",
+        expectedAmountUnits: 123_456_789_012_345_678n,
+        requiredConfirmations: 1,
+      }),
+    );
+    expect(created).toMatchObject({
+      chain: "arc",
+      tokenAddress: "0x3600000000000000000000000000000000000000",
+      expectedAmountUnits: 123_456_789_012_345_678n,
+      requiredConfirmations: 1,
+    });
+    await expect(repository.getPaymentIntentById(created.id)).resolves.toEqual(created);
+  });
+
   it("returns null for an unknown ID", async () => {
     const repository = createDrizzlePaymentRepository(handle.db);
     await expect(repository.getPaymentIntentById(newPaymentIntentId())).resolves.toBeNull();
@@ -138,6 +158,10 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository (Neon
     );
     await expectConstraintViolation(
       repository.createPaymentIntent(newIntent({ requiredConfirmations: 65 })),
+      "payment_intents_required_confirmations_range",
+    );
+    await expectConstraintViolation(
+      repository.createPaymentIntent(newIntent({ chain: "arc", requiredConfirmations: 2 })),
       "payment_intents_required_confirmations_range",
     );
     await expectConstraintViolation(
@@ -234,6 +258,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — r
       result: reconcile({
         expectedAmountUnits: expected,
         requiredConfirmations: 3,
+        finality: CHAIN_DEFINITIONS.base.finality,
         latestBlock,
         payer: options.payer === undefined ? PAYER : options.payer,
         window,
@@ -250,6 +275,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — r
     createdIds.push(id);
     const intent = await repository.createPaymentIntent({
       id,
+      chain: "base",
       externalReference: "INV-204",
       expectedAmountUnits: expected,
       recipientAddress: RECIPIENT,
@@ -484,6 +510,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — c
       result: reconcile({
         expectedAmountUnits: options.expected ?? 25_000_000n,
         requiredConfirmations: 3,
+        finality: CHAIN_DEFINITIONS.base.finality,
         latestBlock,
         payer: options.payer === undefined ? PAYER : options.payer,
         window,
@@ -500,6 +527,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — c
     createdIds.push(id);
     const intent = await repository.createPaymentIntent({
       id,
+      chain: "base",
       externalReference: null,
       expectedAmountUnits: expected,
       recipientAddress: RECIPIENT,
@@ -660,7 +688,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — t
       latestBlock,
       window,
       expiryBlock: null,
-      result: reconcile({ expectedAmountUnits: 25_000_000n, requiredConfirmations: 3, latestBlock, payer: PAYER, window, expiryPassed: false, transfers }),
+      result: reconcile({ expectedAmountUnits: 25_000_000n, requiredConfirmations: 3, finality: CHAIN_DEFINITIONS.base.finality, latestBlock, payer: PAYER, window, expiryPassed: false, transfers }),
       attempt: { requestId, provider: "alchemy", fromBlock: 1_000n, toBlock: latestBlock, candidateCount: transfers.length, startedAt, completedAt: startedAt },
     };
   }
@@ -671,6 +699,7 @@ describe.skipIf(TEST_DATABASE_URL === undefined)("DrizzlePaymentRepository — t
     createdIds.push(id);
     await repository.createPaymentIntent({
       id,
+      chain: "base",
       externalReference: null,
       expectedAmountUnits: 25_000_000n,
       recipientAddress: RECIPIENT,

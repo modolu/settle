@@ -27,12 +27,12 @@
 ## Task list
 1. **Preserve submission + setup + funding-path check** — DONE
 2. **Chain + money primitives** — DONE
-3. **Dual-chain API vertical slice** — IN PROGRESS
-4. **DB + repository** — TODO
-5. **Provider routing** — TODO
-6. **Arc provider** — TODO
-7. **Arc reconciliation + critical tests** — TODO
-8. **Minimal UI** — TODO
+3. **Dual-chain API vertical slice** — DONE
+4. **DB + repository** — DONE
+5. **Provider routing** — DONE
+6. **Arc provider** — DONE
+7. **Arc reconciliation + critical tests** — DONE
+8. **Minimal UI** — IN PROGRESS
 9. **MILESTONE: local Base + Arc demo / full checks** — TODO
 10. **Separate production setup** — TODO (requires explicit approval before deployment/account-resource actions)
 11. **MILESTONE: real Arc payment proof** — TODO (hard stop before signature/broadcast)
@@ -46,6 +46,10 @@
 - Prefer a separate Arc Vercel project and separate Neon DB for isolation, but do not create/deploy them until the approved deployment step.
 - Existing Alchemy Base provider remains intact except minimal shared-interface changes required for routing.
 - No new dependencies unless explicitly approved.
+- Tasks 3–7 were implemented and verified as one coherent vertical slice because accepting Arc at the API before persistence/provider/finality support existed would create an unsafe intermediate state.
+- Arc payment intents persist `chain=arc`, the `0x3600…` compatibility interface as metadata, and exact 18-decimal native/system units. Reconciliation routes strictly from persisted `intent.chain`.
+- Arc provider monitors only the native/system emitter, chunks `getLogs` into ≤9,999-block windows, and fails the full scan on any chunk/error; it never combines the duplicate ERC-20 event stream.
+- Arc deterministic finality is represented as one final confirmation on inclusion; Base confirmation-depth behavior remains unchanged.
 - User controls two wallets for the eventual real Arc proof but currently has no Arc-mainnet USDC.
 
 ## Funding-path risk
@@ -61,7 +65,7 @@
 - Broader Arc provider redundancy/observability after the hackathon.
 
 ## Known issues / workarounds
-- Local machine currently has Node 22.23.2 while `package.json` correctly requires Node 24.x. Do not downgrade the project. Final CI/deployment must use Node 24; existing baseline previously passed under Node 22 with the expected engine warning.
+- Local shell currently has Node 22.12.0 while `package.json` correctly requires Node 24.x. Do not downgrade the project. Final CI/deployment must use Node 24; existing baseline previously passed under Node 22 with the expected engine warning.
 - `TEST_DATABASE_URL` may be absent locally; if so, DB integration tests are skipped and must be reported as skipped, not passed.
 - Disk space is limited; avoid duplicate dependency trees or unnecessary installs.
 - Coding-agent blocker at ~22:09 WAT: Claude Code headless hung on three checks; Codex CLI is authenticated but usage-limited until 2026-10-15 02:08 WAT. User explicitly approved direct implementation through Desktop Commander, so this is no longer a build blocker.
@@ -69,6 +73,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 3/12.
+- Current phase: Task 8/12.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 2 complete; 431/431 unit tests, focused lint, and TypeScript typecheck green.
+- Status: ON TRACK — Tasks 3–7 complete as one vertical slice. Full Vitest: 537 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Arc public RPC smoke returned chain id 5042 and a live head. Forward migration `0001_puzzling_hiroim.sql` generated but not applied to any database.

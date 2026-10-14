@@ -128,13 +128,13 @@ Represents one declared payment obligation.
 | `id` | `varchar(40)` PK | `pi_` + 192 bits of cryptographic randomness encoded base64url. Never sequential. |
 | `account_id` | `uuid` nullable | Reserved future ownership hook. Always `NULL` in v1. No accounts table in v1. |
 | `external_reference` | `varchar(128)` nullable | Caller metadata; not globally unique. |
-| `chain` | `varchar(16)` | Must equal `base`. |
+| `chain` | `varchar(16)` | `base` or `arc`; persisted chain selects accounting, provider, explorer, and finality semantics. |
 | `asset` | `varchar(16)` | Must equal `USDC`. |
-| `token_address` | `varchar(42)` | Canonical native Base USDC address. |
+| `token_address` | `varchar(42)` | Chain-specific canonical USDC interface: Base native USDC contract or Arc `0x3600…` compatibility interface. Arc transfer discovery uses the separate system emitter. |
 | `expected_amount_units` | `numeric(78,0)` | Exact integer token units; positive. |
 | `recipient_address` | `varchar(42)` | Lowercase normalized EVM address. |
 | `payer_address` | `varchar(42)` nullable | Lowercase normalized address when supplied. |
-| `start_block` | `bigint` | Latest Base block at creation + 1. Excludes transfers that predate the intent. |
+| `start_block` | `bigint` | Latest block on the intent chain at creation + 1. Excludes transfers that predate the intent. |
 | `expiry_block` | `bigint` nullable | Resolved lazily once expiry is in the past. |
 | `required_confirmations` | `smallint` | `1..64`, default `3`. |
 | `status` | enum | `pending`, `detected`, `partial`, `paid`, `overpaid`, `expired`, `ambiguous`. |
@@ -167,7 +167,7 @@ Stores chain evidence observed while reconciling an intent. A row may be a deter
 | `payment_intent_id` | FK | `ON DELETE RESTRICT`. |
 | `tx_hash` | `varchar(66)` | Lowercase hex. |
 | `log_index` | `integer` | ERC-20 event log index. |
-| `block_number` | `bigint` | Base block. |
+| `block_number` | `bigint` | Block on the persisted intent chain. |
 | `block_hash` | `varchar(66)` | Used to identify reorged evidence. |
 | `from_address` | `varchar(42)` | Lowercase normalized sender. |
 | `to_address` | `varchar(42)` | Must equal intent recipient. |
@@ -194,7 +194,7 @@ Operational history for debugging and hackathon evidence; do not store raw provi
 | `id` | `uuid` PK |
 | `payment_intent_id` | FK |
 | `request_id` | `varchar(64)` |
-| `provider` | `varchar(32)`; `alchemy` in v1 |
+| `provider` | `varchar(32)`; `alchemy` for Base, `arc-rpc` for Arc |
 | `from_block` | `bigint` |
 | `to_block` | `bigint` |
 | `latest_block` | `bigint` nullable |
@@ -337,7 +337,7 @@ The reconciliation engine is conservative and deterministic.
 On intent creation:
 
 1. validate request;
-2. read the latest Base block through `ChainProvider`;
+2. select the `ChainProvider` from the validated requested chain and read that chain’s latest block;
 3. persist `start_block = latestBlock + 1`;
 4. return the intent.
 
@@ -353,22 +353,13 @@ On reconciliation:
 
 ### 7.2 Transfer discovery and log verification
 
-The Alchemy adapter discovers candidate transactions with the Alchemy Transfers API (`alchemy_getAssetTransfers`), which performs filtered historical transfer discovery over the whole window in one paginated query, and then verifies every discovered transaction from its canonical EVM transaction receipt, decoding the native Base USDC `Transfer(address,address,uint256)` logs with `viem`. Only receipt/log data becomes evidence; the Transfers API's human-readable values are never used for money.
+Provider selection is chain-specific and occurs outside the pure reconciliation engine. The service loads the intent first and selects the adapter from persisted `intent.chain`; callers cannot redirect an existing intent to another chain.
 
-Discovery always filters by:
+**Base.** The existing Alchemy adapter discovers candidate transactions with `alchemy_getAssetTransfers`, filtered by native Base USDC, recipient, optional payer and block window. It then verifies every discovered transaction from its canonical EVM receipt and decodes the native USDC `Transfer(address,address,uint256)` logs with `viem`. Only receipt/log data becomes evidence; Alchemy's human-readable transfer values are never used for money. Any discovery, pagination, receipt or decoding failure aborts the whole scan.
 
-- token contract;
-- `to = recipient`;
-- block range;
-- `category = erc20`.
+**Arc.** The Arc adapter uses standard JSON-RPC `eth_getLogs`/viem against only Arc's native/system USDC `Transfer` emitter `0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE`. This is the complete movement stream and emits exact 18-decimal native values. The adapter does not also monitor the 6-decimal ERC-20 compatibility event because the same ERC-20-initiated movement emits both and would be double-counted. Log queries are split into complete windows of at most 9,999 blocks; if any chunk fails or returns malformed evidence, the full operation fails and no partial scan is returned. Recipient and optional payer are filtered at the RPC level and revalidated before evidence leaves the adapter.
 
-When `payer` exists, also filter by `from = payer` at the provider level.
-
-Verification re-applies the contract, recipient, payer (when declared) and block-range filters to the decoded logs, keeps every matching log of a transaction (identity is `tx_hash + log_index`), and fails the whole operation on any discovery, pagination, receipt or decoding failure — a partial scan is never returned.
-
-The design remains compatible with Alchemy Free's 10-block `eth_getLogs` restriction because reconciliation no longer relies on wide-range `eth_getLogs` queries.
-
-The reconciliation engine never imports Alchemy-specific response types.
+Both adapters expose the same provider-neutral `ChainTransfer` shape. Provider failures are never interpreted as an empty successful scan.
 
 ### 7.3 Association
 
@@ -502,7 +493,7 @@ There is no list-all-intents endpoint in v1. Opaque IDs are the capability bound
 
 Required:
 
-- `chain: "base"`
+- `chain: "base" | "arc"`
 - `asset: "USDC"`
 - `amount: decimal string`
 - `recipient: address`
@@ -630,6 +621,7 @@ Required production variables:
 DATABASE_URL              # Neon pooled runtime URL
 DATABASE_URL_UNPOOLED     # direct URL used by migration tooling
 ALCHEMY_BASE_RPC_URL      # server-only; contains provider credential
+ARC_MAINNET_RPC_URL       # optional server-only Arc RPC override; defaults to https://rpc.mainnet.arc.io
 XAGENT_SLUG               # final registered hackathon slug
 ```
 
@@ -674,13 +666,13 @@ Required v1 controls:
 
 - Zod validation on every untrusted request.
 - `viem` address validation and normalization.
-- Exact integer money conversion; reject negative, zero, exponent notation, NaN-like strings, and more than six decimals.
+- Exact integer money conversion; reject negative, zero, exponent notation, NaN-like strings, and precision beyond the selected chain’s canonical USDC units (Base 6, Arc 18).
 - Reject unknown request fields.
 - 16 KiB maximum JSON body, enforced by a bounded body reader rather than trusting `Content-Length` alone.
 - Intent expiry must be in the future and at most 7 days from creation.
 - Required confirmations must be `1..64`.
 - Parameterized database access only through Drizzle/`pg`.
-- RPC URL is server-only.
+- RPC URLs are server-only.
 - No user-controlled RPC URL, token contract, chain ID, SQL fragment, or ABI.
 - CORS is not wildcard-configured by application code unless the hackathon explicitly requires browser calls from third-party origins. Same-origin demo UI needs no permissive CORS.
 - Security headers use Next.js/Vercel defaults plus explicit `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a restrictive Content Security Policy for the demo UI.
@@ -858,7 +850,7 @@ The exact X-Agent verification JSON schema must come from the official hackathon
 | Neon + `pg` | Managed Postgres plus pooled Node connections and interactive transactions. | Self-hosted DB; Redis; Neon HTTP-only driver where session locks are needed. |
 | Public capability API | Hackathon needs low-friction calling; opaque 192-bit IDs prevent enumeration. | Accounts/API-key issuance in v1. |
 | No `intent_secret` in required v1 | Extra secret handling is useful but not required to demonstrate reconciliation. | Leaving it “optional” for agents to implement inconsistently. |
-| Base + native USDC only | Product brief intentionally fixes one rail and removes FX/token ambiguity. | Multi-chain/asset abstractions exposed to callers. |
+| Base + Arc, USDC only | Arc Microgrants extends the frozen Base submission with one additional rail while preserving one asset and the same payment-intent model. | Chains beyond Base + Arc; additional assets; generic N-chain framework. |
 | Alchemy behind `ChainProvider` | Provider choice must not leak into reconciliation logic. | Direct Alchemy calls from services; second provider in v1. |
 | On-demand transfer discovery + receipt verification | Caller-triggered reconciliation matches MVP scope and avoids chain infrastructure. Alchemy Transfers API discovers candidates; canonical receipts provide exact evidence; independent of the plan's `eth_getLogs` block-range limit. | Indexer DB; WebSocket listener; cron scanner; wide-range `eth_getLogs` (fails on Alchemy Free beyond 10 blocks); tiny-range `eth_getLogs` chunking. |
 | `start_block = latest + 1` | Prevents pre-intent transfers from satisfying a newly created obligation. | Scanning by timestamp alone. |
@@ -870,9 +862,9 @@ The exact X-Agent verification JSON schema must come from the official hackathon
 
 ---
 
-## 17. Build order
+## 17. Historical X-Agent build order
 
-Feed these milestones to the coding agent one at a time. Each milestone ends with a runnable application.
+The milestones below document the completed Base-only X-Agent build. The Arc Microgrants extension is additive and is governed by the Base + Arc decisions above; do not reinterpret the old Base-only milestone wording as current scope.
 
 ### Milestone 0 — Scaffold, contracts, and public deployment shell
 
@@ -986,7 +978,7 @@ Deliver:
 
 ### Assumptions
 
-- Production reconciliation uses Base **mainnet**, because the brief requires a real Base USDC demo.
+- Supported production reconciliation uses Base **mainnet** and Arc **mainnet**. The frozen X-Agent deployment remains Base-only; the Arc Microgrants deployment is separate.
 - The Alchemy deployment plan is Alchemy Free. Its `eth_getLogs` is limited to a 10-block range, so transfer discovery uses the Alchemy Transfers API and canonical transaction receipts instead (§7.2). Settle does not build thousands of tiny free-tier range requests.
 - The final hackathon slug is supplied through `XAGENT_SLUG`.
 - Anonymous intent IDs are acceptable as the v1 capability boundary; there is no public intent listing.
@@ -1003,12 +995,12 @@ The product brief requires `/.well-known/xagent-verification.json` but does not 
 A change is architecturally wrong for the hackathon MVP if it violates any of these:
 
 1. Settle never signs or sends a transaction.
-2. A `paid`/`overpaid` result is backed by canonical native Base USDC `Transfer` evidence.
+2. A `paid`/`overpaid` result is backed by canonical USDC `Transfer` evidence on the intent’s persisted chain: Base native USDC receipts/logs or Arc native/system transfer logs.
 3. Money is exact integer token units internally.
 4. Reconciliation is repeatable without double counting.
 5. Ambiguous evidence is reported as ambiguous, not guessed.
 6. Provider failure cannot create positive payment state.
 7. The API can operate without a continuously running chain process.
-8. Alchemy is replaceable through `ChainProvider` without rewriting domain logic.
+8. Chain integrations are replaceable through `ChainProvider` without rewriting domain logic; provider selection is derived from persisted `intent.chain`.
 9. The demo UI uses the same public API as an agent.
 10. The whole v1 remains one deployable app, one relational database, and managed external services.

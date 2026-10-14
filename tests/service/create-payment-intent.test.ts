@@ -11,6 +11,7 @@ const RECIPIENT = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const PAYER = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
 
 const input: CreatePaymentIntentInput = {
+  chain: "base",
   externalReference: "INV-204",
   expectedAmountUnits: 850_000_000n,
   recipientAddress: RECIPIENT,
@@ -21,7 +22,7 @@ const input: CreatePaymentIntentInput = {
 
 function deps(chainProvider: FakeChainProvider) {
   const paymentRepository = new InMemoryPaymentRepository(() => NOW);
-  return { chainProvider, paymentRepository, now: () => NOW };
+  return { getChainProvider: () => chainProvider, paymentRepository, now: () => NOW };
 }
 
 describe("createPaymentIntent", () => {
@@ -94,6 +95,35 @@ describe("createPaymentIntent", () => {
     const d = deps(new FakeChainProvider({ latestBlock: 1n }));
     const intent = await createPaymentIntent({ ...input, payerAddress: null }, d);
     expect(intent.payerAddress).toBeNull();
+  });
+
+  it("selects the creation provider from the requested chain and persists Arc metadata", async () => {
+    const baseProvider = new FakeChainProvider({ latestBlock: 100n }, "alchemy");
+    const arcProvider = new FakeChainProvider({ latestBlock: 500n }, "arc-rpc");
+    const paymentRepository = new InMemoryPaymentRepository(() => NOW);
+    const intent = await createPaymentIntent(
+      {
+        ...input,
+        chain: "arc",
+        expectedAmountUnits: 100_000_000_000_000_000n,
+        requiredConfirmations: 1,
+      },
+      {
+        getChainProvider: (chain) => (chain === "arc" ? arcProvider : baseProvider),
+        paymentRepository,
+        now: () => NOW,
+      },
+    );
+
+    expect(baseProvider.calls).toBe(0);
+    expect(arcProvider.calls).toBe(1);
+    expect(intent).toMatchObject({
+      chain: "arc",
+      tokenAddress: "0x3600000000000000000000000000000000000000",
+      expectedAmountUnits: 100_000_000_000_000_000n,
+      requiredConfirmations: 1,
+      startBlock: 501n,
+    });
   });
 
   it("rejects domain-invalid input before touching the chain or the repository", async () => {

@@ -10,10 +10,9 @@ import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 
 import type { Database } from "@/db/client";
 import { matchedTransfers, paymentIntents, reconciliationAttempts } from "@/db/schema";
+import { getChainDefinition, isSupportedChain } from "@/domain/chains";
 import {
   ASSET,
-  CHAIN,
-  USDC_TOKEN_ADDRESS,
   type MatchedTransfer,
   type NewPaymentIntent,
   type PaymentIntent,
@@ -34,14 +33,17 @@ type MatchedTransferRow = typeof matchedTransfers.$inferSelect;
 const INT32_MAX = 2_147_483_647n;
 
 function toDomain(row: PaymentIntentRow): PaymentIntent {
-  if (row.chain !== CHAIN || row.asset !== ASSET) {
-    // The CHECK constraints make this unreachable; fail loudly rather than mislabel money.
+  if (!isSupportedChain(row.chain) || row.asset !== ASSET) {
     throw new Error(`payment_intents row ${row.id} has unsupported chain/asset`);
+  }
+  const chainDefinition = getChainDefinition(row.chain);
+  if (row.tokenAddress !== chainDefinition.usdcTokenAddress) {
+    throw new Error(`payment_intents row ${row.id} has an unexpected USDC token address for ${row.chain}`);
   }
   return {
     id: row.id,
     externalReference: row.externalReference,
-    chain: CHAIN,
+    chain: row.chain,
     asset: ASSET,
     tokenAddress: row.tokenAddress,
     expectedAmountUnits: row.expectedAmountUnits,
@@ -111,15 +113,16 @@ function attemptRow(intentId: string, attempt: ReconciliationAttemptRecord) {
 export function createDrizzlePaymentRepository(db: Database): PaymentRepository {
   return {
     async createPaymentIntent(intent: NewPaymentIntent): Promise<PaymentIntent> {
+      const chainDefinition = getChainDefinition(intent.chain);
       const [row] = await db
         .insert(paymentIntents)
         .values({
           id: intent.id,
           accountId: null,
           externalReference: intent.externalReference,
-          chain: CHAIN,
+          chain: intent.chain,
           asset: ASSET,
-          tokenAddress: USDC_TOKEN_ADDRESS,
+          tokenAddress: chainDefinition.usdcTokenAddress,
           expectedAmountUnits: intent.expectedAmountUnits,
           recipientAddress: intent.recipientAddress,
           payerAddress: intent.payerAddress,

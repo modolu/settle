@@ -1,0 +1,4 @@
+ALTER TABLE "payment_intents" DROP CONSTRAINT "payment_intents_chain_check";--> statement-breakpoint
+ALTER TABLE "payment_intents" DROP CONSTRAINT "payment_intents_required_confirmations_range";--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_chain_check" CHECK ("payment_intents"."chain" in ('base', 'arc'));--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_required_confirmations_range" CHECK ((("payment_intents"."chain" = 'base' and "payment_intents"."required_confirmations" between 1 and 64) or ("payment_intents"."chain" = 'arc' and "payment_intents"."required_confirmations" = 1)));

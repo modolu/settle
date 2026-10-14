@@ -10,7 +10,7 @@ import type { BlockWindow, ReconciliationResult } from "@/domain/reconciliation"
 /** Operational record of one reconcile request (`reconciliation_attempts`). */
 export interface ReconciliationAttemptRecord {
   readonly requestId: string;
-  readonly provider: "alchemy";
+  readonly provider: "alchemy" | "arc-rpc";
   readonly fromBlock: bigint;
   readonly toBlock: bigint;
   readonly latestBlock: bigint | null;

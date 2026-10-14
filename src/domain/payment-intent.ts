@@ -1,13 +1,12 @@
 /**
- * Payment intent domain types, status enums and the fixed network constants.
+ * Payment intent domain types, status enums and backwards-compatible Base aliases.
  *
  * Pure TypeScript: no Next.js, Drizzle, `pg`, `viem`, environment or network
- * imports (ARCHITECTURE.md §6). The constants below are code constants, never
- * request input or environment variables; changing the chain, token contract
- * or decimals is an architecture change (ARCHITECTURE.md §2).
+ * imports (ARCHITECTURE.md §6). Canonical Base + Arc rail facts live in
+ * `chains.ts`; changing chain accounting or finality is an architecture change.
  */
 
-import { CHAIN_DEFINITIONS, type SupportedChain } from "./chains";
+import { CHAIN_DEFINITIONS, getChainDefinition, type SupportedChain } from "./chains";
 
 /** Legacy Base aliases retained so existing Base code/tests remain source-compatible. */
 export const CHAIN = "base" as const;
@@ -66,6 +65,7 @@ export interface PaymentIntent {
 
 /** Validated, normalized input for creating an intent (addresses lowercase, money in units). */
 export interface CreatePaymentIntentInput {
+  readonly chain: SupportedChain;
   readonly externalReference: string | null;
   readonly expectedAmountUnits: bigint;
   readonly recipientAddress: string;
@@ -107,7 +107,7 @@ export interface PaymentIntentViolation {
  * Returns an empty array when `input` is acceptable at instant `now`.
  */
 export function paymentIntentViolations(
-  input: Pick<CreatePaymentIntentInput, "expectedAmountUnits" | "requiredConfirmations" | "expiresAt">,
+  input: Pick<CreatePaymentIntentInput, "chain" | "expectedAmountUnits" | "requiredConfirmations" | "expiresAt">,
   now: Date,
 ): PaymentIntentViolation[] {
   const violations: PaymentIntentViolation[] = [];
@@ -116,14 +116,22 @@ export function paymentIntentViolations(
     violations.push({ field: "amount", message: "must be greater than zero" });
   }
 
-  if (
-    !Number.isInteger(input.requiredConfirmations) ||
-    input.requiredConfirmations < MIN_REQUIRED_CONFIRMATIONS ||
-    input.requiredConfirmations > MAX_REQUIRED_CONFIRMATIONS
-  ) {
+  const finality = getChainDefinition(input.chain).finality;
+  if (finality.kind === "confirmation-depth") {
+    if (
+      !Number.isInteger(input.requiredConfirmations) ||
+      input.requiredConfirmations < finality.minRequiredConfirmations ||
+      input.requiredConfirmations > finality.maxRequiredConfirmations
+    ) {
+      violations.push({
+        field: "requiredConfirmations",
+        message: `must be an integer between ${finality.minRequiredConfirmations} and ${finality.maxRequiredConfirmations}`,
+      });
+    }
+  } else if (input.requiredConfirmations !== finality.requiredConfirmations) {
     violations.push({
       field: "requiredConfirmations",
-      message: `must be an integer between ${MIN_REQUIRED_CONFIRMATIONS} and ${MAX_REQUIRED_CONFIRMATIONS}`,
+      message: "must be 1 on Arc because transactions are final on inclusion",
     });
   }
 

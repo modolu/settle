@@ -2,17 +2,16 @@
  * In-memory fakes for the port interfaces (ARCHITECTURE.md §13 "Required
  * service tests"). Services are tested only through their entry points.
  */
+import { getChainDefinition } from "@/domain/chains";
 import {
   ASSET,
-  CHAIN,
-  USDC_TOKEN_ADDRESS,
   type MatchedTransfer,
   type NewPaymentIntent,
   type PaymentIntent,
 } from "@/domain/payment-intent";
 import { compareTransfers, isInWindow, transferIdentity } from "@/domain/reconciliation";
 import { findLastBlockAtOrBefore } from "@/integrations/chain/block-search";
-import type { BlockRange, ChainProvider, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
+import type { BlockRange, ChainProvider, ChainProviderName, ChainTransfer, UsdcTransferQuery } from "@/ports/chain-provider";
 import type {
   ApplyReconciliationOutcome,
   EvidenceCursor,
@@ -34,13 +33,15 @@ export interface FakeChainState {
 }
 
 export class FakeChainProvider implements ChainProvider {
+  readonly providerName: ChainProviderName;
   calls = 0;
   readonly transferQueries: UsdcTransferQuery[] = [];
   readonly timestampRequests: bigint[] = [];
   readonly searchRequests: Array<{ at: Date; range: BlockRange }> = [];
   state: FakeChainState;
 
-  constructor(behaviour: { latestBlock: bigint } | { error: Error } | FakeChainState) {
+  constructor(behaviour: { latestBlock: bigint } | { error: Error } | FakeChainState, providerName: ChainProviderName = "alchemy") {
+    this.providerName = providerName;
     if ("error" in behaviour) {
       this.state = { latestBlock: 0n, transfers: [], failLatestBlock: behaviour.error };
     } else if ("transfers" in behaviour) {
@@ -103,12 +104,13 @@ export class InMemoryPaymentRepository implements PaymentRepository {
       throw new Error(`duplicate payment intent id ${intent.id}`);
     }
     const timestamp = this.now();
+    const chainDefinition = getChainDefinition(intent.chain);
     const row: PaymentIntent = {
       id: intent.id,
       externalReference: intent.externalReference,
-      chain: CHAIN,
+      chain: intent.chain,
       asset: ASSET,
-      tokenAddress: USDC_TOKEN_ADDRESS,
+      tokenAddress: chainDefinition.usdcTokenAddress,
       expectedAmountUnits: intent.expectedAmountUnits,
       recipientAddress: intent.recipientAddress,
       payerAddress: intent.payerAddress,

@@ -5,7 +5,9 @@
  * cross this boundary.
  */
 
-/** One canonical native-USDC `Transfer` log, normalized for reconciliation. */
+export type ChainProviderName = "alchemy" | "arc-rpc";
+
+/** One canonical USDC `Transfer` log, normalized for reconciliation. */
 export interface ChainTransfer {
   readonly txHash: string;
   readonly logIndex: number;
@@ -35,11 +37,13 @@ export interface BlockRange {
 }
 
 export interface ChainProvider {
-  /** Latest canonical Base block number. Throws `UPSTREAM_*` application errors on failure. */
+  readonly providerName: ChainProviderName;
+
+  /** Latest canonical chain block number. Throws `UPSTREAM_*` application errors on failure. */
   getLatestBlock(): Promise<bigint>;
 
   /**
-   * Canonical native Base USDC transfers to `recipient` (from `payer` when
+   * Canonical USDC transfers to `recipient` (from `payer` when
    * declared) within the block range. A query failure throws an `UPSTREAM_*`
    * error and is never reported as "no transfers".
    */

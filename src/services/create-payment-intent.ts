@@ -21,10 +21,11 @@ import {
 import { AppError } from "@/lib/errors";
 import { newPaymentIntentId } from "@/lib/ids";
 import type { ChainProvider } from "@/ports/chain-provider";
+import type { SupportedChain } from "@/domain/chains";
 import type { PaymentRepository } from "@/ports/payment-repository";
 
 export interface CreatePaymentIntentDeps {
-  readonly chainProvider: ChainProvider;
+  readonly getChainProvider: (chain: SupportedChain) => ChainProvider;
   readonly paymentRepository: PaymentRepository;
   /** Clock seam for tests; defaults to the system clock. */
   readonly now?: () => Date;
@@ -43,7 +44,7 @@ export async function createPaymentIntent(
     );
   }
 
-  const latestBlock = await deps.chainProvider.getLatestBlock();
+  const latestBlock = await deps.getChainProvider(input.chain).getLatestBlock();
 
   return deps.paymentRepository.createPaymentIntent({
     ...input,

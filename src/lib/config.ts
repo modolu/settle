@@ -32,6 +32,8 @@ const envSchema = z.object({
   DATABASE_URL_UNPOOLED: z.url({ protocol: /^postgres(ql)?$/, error: "must be a postgres:// URL" }),
   // Server-only Base mainnet RPC endpoint; contains the provider credential.
   ALCHEMY_BASE_RPC_URL: z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }),
+  // Arc mainnet public RPC. Override when a deployment uses a different compatible endpoint.
+  ARC_MAINNET_RPC_URL: z.url({ protocol: /^https?$/, error: "must be an http(s) URL" }).default("https://rpc.mainnet.arc.io"),
 });
 
 /** Raw environment input; `process.env` or an explicit map in tests. */
@@ -52,6 +54,7 @@ export interface AppConfig {
   readonly databaseUrl: string;
   readonly databaseUrlUnpooled: string;
   readonly alchemyBaseRpcUrl: string;
+  readonly arcMainnetRpcUrl: string;
 }
 
 export class ConfigError extends AppError {
@@ -98,6 +101,7 @@ export function loadConfig(env: EnvironmentSource = process.env): AppConfig {
     DATABASE_URL,
     DATABASE_URL_UNPOOLED,
     ALCHEMY_BASE_RPC_URL,
+    ARC_MAINNET_RPC_URL,
   } = parsed.data;
   const deploymentEnv: DeploymentEnvironment =
     VERCEL_ENV ?? (NODE_ENV === "test" ? "test" : "development");
@@ -111,6 +115,7 @@ export function loadConfig(env: EnvironmentSource = process.env): AppConfig {
     databaseUrl: DATABASE_URL,
     databaseUrlUnpooled: DATABASE_URL_UNPOOLED,
     alchemyBaseRpcUrl: ALCHEMY_BASE_RPC_URL,
+    arcMainnetRpcUrl: ARC_MAINNET_RPC_URL,
   };
 }
 

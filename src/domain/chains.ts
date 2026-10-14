@@ -70,6 +70,15 @@ export const CHAIN_DEFINITIONS = {
   },
 } as const satisfies Readonly<Record<SupportedChain, ChainDefinition>>;
 
+export function isSupportedChain(value: string): value is SupportedChain {
+  return value === "base" || value === "arc";
+}
+
 export function getChainDefinition(chain: SupportedChain): ChainDefinition {
   return CHAIN_DEFINITIONS[chain];
+}
+
+export function defaultRequiredConfirmations(chain: SupportedChain): number {
+  const finality = getChainDefinition(chain).finality;
+  return finality.kind === "confirmation-depth" ? finality.defaultRequiredConfirmations : finality.requiredConfirmations;
 }

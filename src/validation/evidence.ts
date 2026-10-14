@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import { formatUsdcAmount } from "@/domain/money";
+import type { SupportedChain } from "@/domain/chains";
 import type { MatchedTransfer, TransferAssociation } from "@/domain/payment-intent";
 import { toChecksumAddress } from "@/lib/addresses";
 import { AppError } from "@/lib/errors";
@@ -80,23 +81,23 @@ export interface EvidenceResponse {
   readonly nextCursor: string | null;
 }
 
-export function toEvidenceItemResponse(transfer: MatchedTransfer): EvidenceItemResponse {
+export function toEvidenceItemResponse(transfer: MatchedTransfer, chain: SupportedChain = "base"): EvidenceItemResponse {
   return {
     transactionHash: transfer.txHash,
     logIndex: transfer.logIndex,
     blockNumber: transfer.blockNumber.toString(),
     from: toChecksumAddress(transfer.fromAddress),
     to: toChecksumAddress(transfer.toAddress),
-    amount: formatUsdcAmount(transfer.amountUnits),
+    amount: formatUsdcAmount(transfer.amountUnits, chain),
     confirmations: transfer.confirmations,
     blockTimestamp: transfer.blockTimestamp.toISOString(),
     association: transfer.association,
   };
 }
 
-export function toEvidenceResponse(page: EvidencePage): EvidenceResponse {
+export function toEvidenceResponse(page: EvidencePage, chain: SupportedChain = "base"): EvidenceResponse {
   return {
-    evidence: page.items.map(toEvidenceItemResponse),
+    evidence: page.items.map((item) => toEvidenceItemResponse(item, chain)),
     nextCursor: page.nextCursor === null ? null : encodeEvidenceCursor(page.nextCursor),
   };
 }

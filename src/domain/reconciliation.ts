@@ -16,6 +16,7 @@
  *
  * Pure TypeScript: no framework, database, RPC or environment imports.
  */
+import type { FinalityPolicy } from "./chains";
 import type { MatchConfidence, PaymentStatus, TransferAssociation } from "./payment-intent";
 
 /** One canonical USDC transfer as seen on chain, before confirmation depth is known. */
@@ -47,6 +48,7 @@ export interface BlockWindow {
 export interface ReconciliationInput {
   readonly expectedAmountUnits: bigint;
   readonly requiredConfirmations: number;
+  readonly finality: FinalityPolicy;
   readonly latestBlock: bigint;
   /** Declared payer (lowercase) or `null` for sender-group association. */
   readonly payer: string | null;
@@ -190,13 +192,15 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
   }
 
   const transfers: ReconciledTransfer[] = observed.map((transfer) => {
-    const confirmations = confirmationDepth(transfer.blockNumber, input.latestBlock);
+    const depth = confirmationDepth(transfer.blockNumber, input.latestBlock);
+    const deterministicFinal = input.finality.kind === "deterministic" && depth > 0n;
+    const confirmations = input.finality.kind === "deterministic" ? (deterministicFinal ? 1n : 0n) : depth;
     return {
       ...transfer,
       from: transfer.from.toLowerCase(),
       to: transfer.to.toLowerCase(),
       confirmations,
-      confirmed: confirmations >= required,
+      confirmed: input.finality.kind === "deterministic" ? deterministicFinal : confirmations >= required,
       association,
     };
   });

@@ -7,11 +7,9 @@
 import { z } from "zod";
 
 import { formatUsdcAmount, parseUsdcAmount } from "@/domain/money";
-import type { SupportedChain } from "@/domain/chains";
+import { defaultRequiredConfirmations, getChainDefinition, isSupportedChain, type SupportedChain } from "@/domain/chains";
 import {
   ASSET,
-  CHAIN,
-  DEFAULT_REQUIRED_CONFIRMATIONS,
   MAX_EXTERNAL_REFERENCE_LENGTH,
   paymentIntentViolations,
   remainingAmountUnits,
@@ -59,38 +57,41 @@ export function parseCreatePaymentIntentRequest(body: unknown, now: Date): Creat
   }
   const request = parsed.data;
 
-  if (request.chain !== CHAIN) {
-    throw new AppError("UNSUPPORTED_CHAIN", `chain must be "${CHAIN}"`);
+  if (!isSupportedChain(request.chain)) {
+    throw new AppError("UNSUPPORTED_CHAIN", 'chain must be "base" or "arc"');
   }
+  const chain = request.chain;
+  const chainDefinition = getChainDefinition(chain);
   if (request.asset !== ASSET) {
     throw new AppError("UNSUPPORTED_ASSET", `asset must be "${ASSET}"`);
   }
 
   const recipientAddress = normalizeAddress(request.recipient);
   if (recipientAddress === null) {
-    throw new AppError("INVALID_ADDRESS", "recipient must be a valid Base address");
+    throw new AppError("INVALID_ADDRESS", `recipient must be a valid ${chainDefinition.displayName} address`);
   }
   let payerAddress: string | null = null;
   if (request.payer !== undefined) {
     payerAddress = normalizeAddress(request.payer);
     if (payerAddress === null) {
-      throw new AppError("INVALID_ADDRESS", "payer must be a valid Base address");
+      throw new AppError("INVALID_ADDRESS", `payer must be a valid ${chainDefinition.displayName} address`);
     }
   }
 
   const problems: string[] = [];
-  const amount = parseUsdcAmount(request.amount);
+  const amount = parseUsdcAmount(request.amount, chain);
   if (!amount.ok) {
     problems.push(`amount: ${amount.reason}`);
   }
 
   const input: CreatePaymentIntentInput = {
+    chain,
     externalReference: request.externalReference ?? null,
     expectedAmountUnits: amount.ok ? amount.units : 0n,
     recipientAddress,
     payerAddress,
     expiresAt: new Date(request.expiresAt),
-    requiredConfirmations: request.requiredConfirmations ?? DEFAULT_REQUIRED_CONFIRMATIONS,
+    requiredConfirmations: request.requiredConfirmations ?? defaultRequiredConfirmations(chain),
   };
 
   for (const violation of paymentIntentViolations(input, now)) {
@@ -140,9 +141,9 @@ export function toPaymentIntentResponse(intent: PaymentIntent): PaymentIntentRes
     externalReference: intent.externalReference,
     chain: intent.chain,
     asset: intent.asset,
-    expectedAmount: formatUsdcAmount(intent.expectedAmountUnits),
-    receivedAmount: formatUsdcAmount(intent.receivedAmountUnits),
-    remainingAmount: formatUsdcAmount(remainingAmountUnits(intent)),
+    expectedAmount: formatUsdcAmount(intent.expectedAmountUnits, intent.chain),
+    receivedAmount: formatUsdcAmount(intent.receivedAmountUnits, intent.chain),
+    remainingAmount: formatUsdcAmount(remainingAmountUnits(intent), intent.chain),
     recipient: toChecksumAddress(intent.recipientAddress),
     payer: intent.payerAddress === null ? null : toChecksumAddress(intent.payerAddress),
     requiredConfirmations: intent.requiredConfirmations,

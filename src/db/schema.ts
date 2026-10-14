@@ -71,14 +71,14 @@ export const paymentIntents = pgTable(
   (table) => [
     index("payment_intents_status_expires_at_idx").on(table.status, table.expiresAt),
     index("payment_intents_recipient_created_at_idx").on(table.recipientAddress, table.createdAt),
-    check("payment_intents_chain_check", sql`${table.chain} = 'base'`),
+    check("payment_intents_chain_check", sql`${table.chain} in ('base', 'arc')`),
     check("payment_intents_asset_check", sql`${table.asset} = 'USDC'`),
     check("payment_intents_expected_amount_positive", sql`${table.expectedAmountUnits} > 0`),
     check("payment_intents_received_amount_non_negative", sql`${table.receivedAmountUnits} >= 0`),
     check("payment_intents_detected_amount_non_negative", sql`${table.detectedAmountUnits} >= 0`),
     check(
       "payment_intents_required_confirmations_range",
-      sql`${table.requiredConfirmations} between ${sql.raw(String(MIN_REQUIRED_CONFIRMATIONS))} and ${sql.raw(String(MAX_REQUIRED_CONFIRMATIONS))}`,
+      sql`((${table.chain} = 'base' and ${table.requiredConfirmations} between ${sql.raw(String(MIN_REQUIRED_CONFIRMATIONS))} and ${sql.raw(String(MAX_REQUIRED_CONFIRMATIONS))}) or (${table.chain} = 'arc' and ${table.requiredConfirmations} = 1))`,
     ),
     check(
       "payment_intents_expires_after_creation",

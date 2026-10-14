@@ -8,6 +8,13 @@
       "when": 1789682217305,
       "tag": "0000_initial_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792013391780,
+      "tag": "0001_puzzling_hiroim",
+      "breakpoints": true
     }
   ]
 }

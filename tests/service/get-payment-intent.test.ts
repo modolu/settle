@@ -11,6 +11,7 @@ describe("getPaymentIntent", () => {
     const paymentRepository = new InMemoryPaymentRepository();
     const created = await paymentRepository.createPaymentIntent({
       id: newPaymentIntentId(),
+      chain: "base",
       externalReference: null,
       expectedAmountUnits: 25_000_000n,
       recipientAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",

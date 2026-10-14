@@ -241,6 +241,8 @@ export function createAlchemyBaseProvider(options: AlchemyBaseProviderOptions): 
     });
 
   const provider: ChainProvider = {
+    providerName: "alchemy",
+
     async getLatestBlock(): Promise<bigint> {
       let result: unknown;
       try {

@@ -1,6 +1,6 @@
 /**
  * viem-typed Base / native USDC constants for the chain integration layer.
- * The canonical values live in `src/domain/payment-intent.ts`; this module
+ * The canonical values are exposed through the domain Base aliases backed by `chains.ts`; this module
  * binds them to viem's chain definition and ABI types and asserts they agree.
  */
 import { getAddress, parseAbi, type Address, type Chain } from "viem";

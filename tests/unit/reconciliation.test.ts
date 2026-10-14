@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CHAIN_DEFINITIONS } from "@/domain/chains";
 import type { PaymentStatus } from "@/domain/payment-intent";
 import {
   STATUS_PRECEDENCE,
@@ -37,6 +38,7 @@ function input(overrides: Partial<ReconciliationInput> = {}): ReconciliationInpu
   return {
     expectedAmountUnits: 100_000_000n,
     requiredConfirmations: 3,
+    finality: CHAIN_DEFINITIONS.base.finality,
     latestBlock: 1_000n,
     payer: PAYER,
     window: { fromBlock: 1n, toBlock: 1_000n },
@@ -467,5 +469,61 @@ describe("reconcile — payer-less association", () => {
   it("single sender with only under-confirmed evidence → detected", () => {
     const result = reconcile(noPayer({ transfers: [transfer({ blockNumber: UNCONFIRMED_BLOCK, amountUnits: 100_000_000n, from: SENDER_B })] }));
     expect(result).toMatchObject({ status: "detected", matchConfidence: "single_sender" });
+  });
+});
+
+describe("reconcile — Arc deterministic finality", () => {
+  function arcInput(overrides: Partial<ReconciliationInput> = {}): ReconciliationInput {
+    return {
+      expectedAmountUnits: 100_000_000_000_000_000n,
+      requiredConfirmations: 1,
+      finality: CHAIN_DEFINITIONS.arc.finality,
+      latestBlock: 1_000n,
+      payer: PAYER,
+      window: { fromBlock: 1n, toBlock: 1_000n },
+      expiryPassed: false,
+      transfers: [],
+      ...overrides,
+    };
+  }
+
+  it("treats a canonical transfer in the latest committed block as final immediately", () => {
+    const result = reconcile(
+      arcInput({
+        transfers: [
+          transfer({ blockNumber: 1_000n, amountUnits: 100_000_000_000_000_000n }),
+        ],
+      }),
+    );
+    expect(result).toMatchObject({
+      status: "paid",
+      detectedAmountUnits: 100_000_000_000_000_000n,
+      receivedAmountUnits: 100_000_000_000_000_000n,
+      matchConfidence: "exact_payer",
+    });
+    expect(result.transfers[0]).toMatchObject({ confirmations: 1n, confirmed: true });
+  });
+
+  it("resolves partial and overpaid amounts without a probabilistic confirmation wait", () => {
+    const partial = reconcile(
+      arcInput({ transfers: [transfer({ blockNumber: 1_000n, amountUnits: 40_000_000_000_000_000n })] }),
+    );
+    expect(partial).toMatchObject({ status: "partial", receivedAmountUnits: 40_000_000_000_000_000n });
+
+    const overpaid = reconcile(
+      arcInput({ transfers: [transfer({ blockNumber: 1_000n, amountUnits: 120_000_000_000_000_000n })] }),
+    );
+    expect(overpaid).toMatchObject({ status: "overpaid", receivedAmountUnits: 120_000_000_000_000_000n });
+  });
+
+  it("does not finalize evidence above the observed head", () => {
+    const result = reconcile(
+      arcInput({
+        window: { fromBlock: 1n, toBlock: 1_001n },
+        transfers: [transfer({ blockNumber: 1_001n, amountUnits: 100_000_000_000_000_000n })],
+      }),
+    );
+    expect(result.status).toBe("detected");
+    expect(result.transfers[0]).toMatchObject({ confirmations: 0n, confirmed: false });
   });
 });

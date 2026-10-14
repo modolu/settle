@@ -6,7 +6,7 @@
 **Track:** Open Innovation Challenge  
 **Product type:** API-first agent capability  
 **Working name:** Settle  
-**MVP network:** Base  
+**MVP network:** Base (X-Agent) / Base + Arc (Arc Microgrants extension)  
 **MVP asset:** USDC  
 
 > **Arc Microgrants extension (2026-10-14):** the original X-Agent submission remains the frozen Base-only artifact. The `arc-microgrants` branch extends the same Settle product to Base + Arc without adding custody or payment execution. Arc uses exact 18-decimal native/system USDC transfer accounting and deterministic finality; the public API remains payment-intent/reconciliation/evidence oriented.
@@ -23,7 +23,7 @@ It answers a deceptively simple but important question:
 
 An autonomous agent can create an expected payment, continue doing other work, and later ask Settle whether that payment has been received. Settle checks the blockchain, reconciles matching transfers against the expected payment, and returns structured evidence such as status, amount received, remaining amount, transaction hashes, confirmations, timestamps, and matching confidence.
 
-The MVP focuses on **USDC payments on Base**.
+The original X-Agent MVP focuses on **USDC payments on Base**. The Arc Microgrants extension supports **USDC on Base + Arc** through the same payment-intent API.
 
 Settle does not custody funds, hold private keys, execute trades, score wallet risk, perform compliance analysis, or decide whether a transaction is “safe.” It is a deterministic reconciliation layer.
 
@@ -344,15 +344,15 @@ The MVP is intentionally narrow.
 ## Supported
 
 ```text
-Chain: Base
-Asset: native USDC on Base
+Chain: Base + Arc
+Asset: USDC only
 Mode: read-only reconciliation
 Payment direction: payer → recipient
-Matching: recipient + token + amount + time window
+Matching: recipient + chain-specific USDC evidence + amount + time window
 Strong matching: payer address supplied
 Partial-payment aggregation: yes
 Overpayment detection: yes
-Confirmation threshold: configurable within safe bounds
+Finality: Base configurable confirmation threshold; Arc deterministic finality on inclusion
 ```
 
 ## Core endpoints
@@ -493,11 +493,11 @@ The MVP needs one rail that is:
 - stable in denomination;
 - straightforward for a live demonstration.
 
-Base + USDC provides a clean first environment.
+Base + USDC provided the clean first environment for the frozen X-Agent submission. Arc is the first additive second rail: it keeps USDC as the only asset while proving that Settle can preserve one payment-state contract across different chain accounting and finality semantics.
 
 It keeps the product focused on reconciliation instead of exchange-rate logic.
 
-The design should remain chain-adapter based so more networks can be added later.
+The implementation remains deliberately limited to Base + Arc rather than becoming a generic N-chain framework during the hackathon.
 
 ---
 
@@ -1273,7 +1273,7 @@ verification/README.md
 
 To hit the deadline, do not build:
 
-- multi-chain support;
+- chains beyond Base + Arc;
 - fiat conversion;
 - stablecoin swaps;
 - wallet connection;
@@ -1400,7 +1400,9 @@ Settle's hackathon MVP is ready when:
 ```text
 ✓ deployed API is publicly reachable
 
-✓ Base USDC payment intent can be created
+✓ Base and Arc USDC payment intents can be created
+
+✓ one real Arc-mainnet USDC payment is reconciled with native/system evidence
 
 ✓ exact payer/recipient/amount can be reconciled
 

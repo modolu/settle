@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CHAIN_DEFINITIONS } from "@/domain/chains";
 import { reconcile, type ObservedTransfer } from "@/domain/reconciliation";
 import { AppError } from "@/lib/errors";
 import { newPaymentIntentId } from "@/lib/ids";
@@ -27,6 +28,7 @@ async function seed(count: number) {
   const paymentRepository = new InMemoryPaymentRepository();
   const intent = await paymentRepository.createPaymentIntent({
     id: newPaymentIntentId(),
+    chain: "base",
     externalReference: null,
     expectedAmountUnits: 1_000_000_000n,
     recipientAddress: RECIPIENT,
@@ -43,7 +45,7 @@ async function seed(count: number) {
     latestBlock: 10_000n,
     window,
     expiryBlock: null,
-    result: reconcile({ expectedAmountUnits: 1_000_000_000n, requiredConfirmations: 1, latestBlock: 10_000n, payer: PAYER, window, expiryPassed: false, transfers }),
+    result: reconcile({ expectedAmountUnits: 1_000_000_000n, requiredConfirmations: 1, finality: CHAIN_DEFINITIONS.base.finality, latestBlock: 10_000n, payer: PAYER, window, expiryPassed: false, transfers }),
     attempt: { requestId: "r", provider: "alchemy", fromBlock: 1n, toBlock: 10_000n, candidateCount: count, startedAt: new Date(), completedAt: new Date() },
   });
   return { paymentRepository, intent };
@@ -53,22 +55,23 @@ describe("getPaymentEvidence", () => {
   it("returns evidence in canonical order and pages with a keyset cursor", async () => {
     const { paymentRepository, intent } = await seed(5);
     const first = await getPaymentEvidence(intent.id, { limit: 2, cursor: null }, { paymentRepository });
-    expect(first.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[100n, 0], [100n, 1]]);
-    expect(first.nextCursor).toEqual({ blockNumber: 100n, logIndex: 1, txHash: first.items[1]?.txHash });
+    expect(first.chain).toBe("base");
+    expect(first.page.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[100n, 0], [100n, 1]]);
+    expect(first.page.nextCursor).toEqual({ blockNumber: 100n, logIndex: 1, txHash: first.page.items[1]?.txHash });
 
-    const second = await getPaymentEvidence(intent.id, { limit: 2, cursor: first.nextCursor }, { paymentRepository });
-    expect(second.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[101n, 0], [101n, 1]]);
+    const second = await getPaymentEvidence(intent.id, { limit: 2, cursor: first.page.nextCursor }, { paymentRepository });
+    expect(second.page.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[101n, 0], [101n, 1]]);
 
-    const third = await getPaymentEvidence(intent.id, { limit: 2, cursor: second.nextCursor }, { paymentRepository });
-    expect(third.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[102n, 0]]);
-    expect(third.nextCursor).toBeNull();
+    const third = await getPaymentEvidence(intent.id, { limit: 2, cursor: second.page.nextCursor }, { paymentRepository });
+    expect(third.page.items.map((row) => [row.blockNumber, row.logIndex])).toEqual([[102n, 0]]);
+    expect(third.page.nextCursor).toBeNull();
   });
 
   it("returns an empty page for an intent without evidence", async () => {
     const { paymentRepository, intent } = await seed(0);
     await expect(getPaymentEvidence(intent.id, { limit: 50, cursor: null }, { paymentRepository })).resolves.toEqual({
-      items: [],
-      nextCursor: null,
+      chain: "base",
+      page: { items: [], nextCursor: null },
     });
   });
 

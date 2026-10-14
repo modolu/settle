@@ -99,6 +99,11 @@ describe("toEvidenceResponse", () => {
     });
   });
 
+  it("formats Arc evidence using 18-decimal native/system units", () => {
+    expect(toEvidenceItemResponse({ ...row, amountUnits: 1n }, "arc").amount).toBe("0.000000000000000001");
+    expect(toEvidenceItemResponse({ ...row, amountUnits: 100_000_000_000_000_000n }, "arc").amount).toBe("0.10");
+  });
+
   it("never exposes internals and serializes without bigint", () => {
     const item = toEvidenceItemResponse(row) as unknown as Record<string, unknown>;
     for (const key of ["id", "paymentIntentId", "amountUnits", "blockHash", "firstSeenAt", "lastSeenAt"]) {

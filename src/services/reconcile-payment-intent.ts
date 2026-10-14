@@ -17,6 +17,7 @@
  */
 import "server-only";
 
+import { getChainDefinition, type SupportedChain } from "@/domain/chains";
 import type { PaymentIntent } from "@/domain/payment-intent";
 import { reconcile, type BlockWindow, type ObservedTransfer } from "@/domain/reconciliation";
 import { AppError, isAppError } from "@/lib/errors";
@@ -24,7 +25,7 @@ import type { ChainProvider, ChainTransfer } from "@/ports/chain-provider";
 import type { PaymentRepository } from "@/ports/payment-repository";
 
 export interface ReconcilePaymentIntentDeps {
-  readonly chainProvider: ChainProvider;
+  readonly getChainProvider: (chain: SupportedChain) => ChainProvider;
   readonly paymentRepository: PaymentRepository;
   readonly requestId: string;
   /** Clock seam for tests; defaults to the system clock. */
@@ -97,19 +98,20 @@ export async function reconcilePaymentIntent(
   }
 
   const startedAt = now();
-  const attemptBase = { requestId: deps.requestId, provider: "alchemy" as const, fromBlock: intent.startBlock, startedAt };
+  const chainProvider = deps.getChainProvider(intent.chain);
+  const attemptBase = { requestId: deps.requestId, provider: chainProvider.providerName, fromBlock: intent.startBlock, startedAt };
   let latestBlock: bigint | null = null;
   let toBlock: bigint | null = null;
 
   try {
-    latestBlock = await deps.chainProvider.getLatestBlock();
-    const { window, expiryPassed, resolvedExpiryBlock } = await resolveWindow(intent, latestBlock, startedAt, deps.chainProvider);
+    latestBlock = await chainProvider.getLatestBlock();
+    const { window, expiryPassed, resolvedExpiryBlock } = await resolveWindow(intent, latestBlock, startedAt, chainProvider);
     toBlock = window.toBlock;
 
     const transfers: ChainTransfer[] =
       window.fromBlock > window.toBlock
         ? []
-        : await deps.chainProvider.getUsdcTransfers({
+        : await chainProvider.getUsdcTransfers({
             fromBlock: window.fromBlock,
             toBlock: window.toBlock,
             recipient: intent.recipientAddress,
@@ -123,7 +125,7 @@ export async function reconcilePaymentIntent(
     const blockNumbers = [...new Set(transfers.map((transfer) => transfer.blockNumber))];
     const timestamps = new Map<bigint, Date>(
       await Promise.all(
-        blockNumbers.map(async (blockNumber) => [blockNumber, await deps.chainProvider.getBlockTimestamp(blockNumber)] as const),
+        blockNumbers.map(async (blockNumber) => [blockNumber, await chainProvider.getBlockTimestamp(blockNumber)] as const),
       ),
     );
     const observed: ObservedTransfer[] = transfers.map((transfer) => {
@@ -137,6 +139,7 @@ export async function reconcilePaymentIntent(
     const result = reconcile({
       expectedAmountUnits: intent.expectedAmountUnits,
       requiredConfirmations: intent.requiredConfirmations,
+      finality: getChainDefinition(intent.chain).finality,
       latestBlock,
       payer: intent.payerAddress,
       window,

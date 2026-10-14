@@ -26,10 +26,10 @@ const PAYER = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 function wire(chainProvider: FakeChainProvider): InMemoryPaymentRepository {
   const paymentRepository = new InMemoryPaymentRepository();
   state.container = {
-    createPaymentIntent: (input) => createPaymentIntent(input, { chainProvider, paymentRepository }),
+    createPaymentIntent: (input) => createPaymentIntent(input, { getChainProvider: () => chainProvider, paymentRepository }),
     getPaymentIntent: (id) => getPaymentIntent(id, { paymentRepository }),
     reconcilePaymentIntent: (id, requestId) =>
-      reconcilePaymentIntent(id, { chainProvider, paymentRepository, requestId }),
+      reconcilePaymentIntent(id, { getChainProvider: () => chainProvider, paymentRepository, requestId }),
     getPaymentEvidence: (id, options) => getPaymentEvidence(id, options, { paymentRepository }),
   };
   return paymentRepository;
@@ -114,6 +114,32 @@ describe("POST /v1/payment-intents", () => {
     expect(requiredConfirmations).toBe(3);
     expect(expectedAmount).toBe("25.00");
     expect(repository.intents.get(id as string)?.startBlock).toBe(42_000_000n);
+  });
+
+  it("creates an Arc intent with 18-decimal accounting and deterministic-finality default", async () => {
+    const repository = wire(new FakeChainProvider({ latestBlock: 500n }, "arc-rpc"));
+    const response = await post({
+      ...validBody,
+      chain: "arc",
+      amount: "0.123456789012345678",
+      requiredConfirmations: undefined,
+    });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      chain: "arc",
+      expectedAmount: "0.123456789012345678",
+      receivedAmount: "0.00",
+      remainingAmount: "0.123456789012345678",
+      requiredConfirmations: 1,
+    });
+    const persisted = repository.intents.get(body["id"] as string);
+    expect(persisted).toMatchObject({
+      chain: "arc",
+      tokenAddress: "0x3600000000000000000000000000000000000000",
+      expectedAmountUnits: 123_456_789_012_345_678n,
+      startBlock: 501n,
+    });
   });
 
   it.each([

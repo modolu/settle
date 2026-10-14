@@ -24,6 +24,7 @@ function chainTransfer(overrides: Partial<ChainTransfer> & { blockNumber: bigint
 }
 
 interface SetupOptions {
+  chain?: "base" | "arc";
   payerAddress?: string | null;
   expectedAmountUnits?: bigint;
   requiredConfirmations?: number;
@@ -41,6 +42,7 @@ async function setup(chain: FakeChainState, options: SetupOptions = {}) {
   const expiresAt = options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000);
   const intent = await paymentRepository.createPaymentIntent({
     id: newPaymentIntentId(),
+    chain: options.chain ?? "base",
     externalReference: "INV-204",
     expectedAmountUnits: options.expectedAmountUnits ?? 25_000_000n,
     recipientAddress: RECIPIENT,
@@ -51,7 +53,7 @@ async function setup(chain: FakeChainState, options: SetupOptions = {}) {
   });
   const now = options.now ?? (() => new Date(expiresAt.getTime() - 1_000));
   const reconcile = (requestId = "req_test") =>
-    reconcilePaymentIntent(intent.id, { chainProvider, paymentRepository, requestId, now });
+    reconcilePaymentIntent(intent.id, { getChainProvider: () => chainProvider, paymentRepository, requestId, now });
   return { chainProvider, paymentRepository, intent, reconcile };
 }
 
@@ -260,7 +262,7 @@ describe("reconcilePaymentIntent — guards", () => {
   it("throws INTENT_NOT_FOUND for an unknown ID", async () => {
     const { chainProvider, paymentRepository } = await setup({ latestBlock: 1n, transfers: [] });
     const error = await captureAppError(
-      reconcilePaymentIntent(newPaymentIntentId(), { chainProvider, paymentRepository, requestId: "req_x" }),
+      reconcilePaymentIntent(newPaymentIntentId(), { getChainProvider: () => chainProvider, paymentRepository, requestId: "req_x" }),
     );
     expect(error.code).toBe("INTENT_NOT_FOUND");
     expect(chainProvider.calls).toBe(0);
@@ -272,6 +274,7 @@ describe("reconcilePaymentIntent — guards", () => {
     const paymentRepository = new InMemoryPaymentRepository();
     const intent = await paymentRepository.createPaymentIntent({
       id: newPaymentIntentId(),
+      chain: "base",
       externalReference: null,
       expectedAmountUnits: 1n,
       recipientAddress: RECIPIENT,
@@ -280,7 +283,7 @@ describe("reconcilePaymentIntent — guards", () => {
       requiredConfirmations: 1,
       startBlock: START_BLOCK,
     });
-    const error = await captureAppError(reconcilePaymentIntent(intent.id, { chainProvider, paymentRepository, requestId: "r" }));
+    const error = await captureAppError(reconcilePaymentIntent(intent.id, { getChainProvider: () => chainProvider, paymentRepository, requestId: "r" }));
     expect(error.code).toBe("UPSTREAM_INVALID_RESPONSE");
     expect(paymentRepository.evidenceRows(intent.id)).toHaveLength(0);
   });
@@ -577,7 +580,7 @@ describe("reconcilePaymentIntent — canonical evidence and reorgs", () => {
     // Now the clock passes expiry: window becomes [1000, 1050]; the row at 1060 is outside it.
     const repo2 = paymentRepository;
     const later = reconcilePaymentIntent(intent.id, {
-      chainProvider,
+      getChainProvider: () => chainProvider,
       paymentRepository: repo2,
       requestId: "req_2",
       now: () => new Date(expiresAt.getTime() + 60_000),
@@ -675,5 +678,55 @@ describe("reconcilePaymentIntent — failure invariants (Milestone 5)", () => {
     const recovered = await fixture.reconcile("req_recovered");
     expect(recovered.intent.status).toBe("partial");
     expect(fixture.paymentRepository.evidenceRows(fixture.intent.id)).toHaveLength(1);
+  });
+});
+
+
+describe("reconcilePaymentIntent — Arc provider routing and deterministic finality", () => {
+  it("selects the provider from persisted intent.chain and finalizes a latest-block Arc transfer", async () => {
+    const paymentRepository = new InMemoryPaymentRepository();
+    const intent = await paymentRepository.createPaymentIntent({
+      id: newPaymentIntentId(),
+      chain: "arc",
+      externalReference: "ARC-PROOF",
+      expectedAmountUnits: 100_000_000_000_000_000n,
+      recipientAddress: RECIPIENT,
+      payerAddress: PAYER,
+      expiresAt: new Date(Date.now() + 60_000),
+      requiredConfirmations: 1,
+      startBlock: START_BLOCK,
+    });
+    const arcProvider = new FakeChainProvider(
+      {
+        latestBlock: 1_100n,
+        transfers: [chainTransfer({ blockNumber: 1_100n, amountUnits: 100_000_000_000_000_000n })],
+        timestamps: new Map([[1_100n, new Date("2026-10-14T22:30:00.000Z")]]),
+      },
+      "arc-rpc",
+    );
+    const baseProvider = new FakeChainProvider({ latestBlock: 9_999n }, "alchemy");
+    const requested: string[] = [];
+
+    const outcome = await reconcilePaymentIntent(intent.id, {
+      getChainProvider: (chain) => {
+        requested.push(chain);
+        return chain === "arc" ? arcProvider : baseProvider;
+      },
+      paymentRepository,
+      requestId: "req_arc",
+      now: () => new Date(intent.expiresAt.getTime() - 1_000),
+    });
+
+    expect(requested).toEqual(["arc"]);
+    expect(baseProvider.calls).toBe(0);
+    expect(outcome.intent).toMatchObject({
+      chain: "arc",
+      status: "paid",
+      receivedAmountUnits: 100_000_000_000_000_000n,
+      matchConfidence: "exact_payer",
+      paidAt: new Date("2026-10-14T22:30:00.000Z"),
+    });
+    expect(paymentRepository.evidenceRows(intent.id)[0]).toMatchObject({ confirmations: 1, association: "matched" });
+    expect(paymentRepository.attempts.at(-1)).toMatchObject({ provider: "arc-rpc", resultStatus: "paid" });
   });
 });
