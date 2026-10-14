@@ -33,8 +33,8 @@
 6. **Arc provider** — DONE
 7. **Arc reconciliation + critical tests** — DONE
 8. **Minimal UI** — DONE
-9. **MILESTONE: local Base + Arc demo / full checks** — IN PROGRESS
-10. **Separate production setup** — TODO (requires explicit approval before deployment/account-resource actions)
+9. **MILESTONE: local Base + Arc demo / full checks** — DONE
+10. **Separate production setup** — IN PROGRESS (user approved external infrastructure/deployment actions)
 11. **MILESTONE: real Arc payment proof** — TODO (hard stop before signature/broadcast)
 12. **Submission polish / final regression / demo** — TODO
 
@@ -43,7 +43,7 @@
 - X-Agent review commit is frozen at `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`.
 - Immutable tag `xagent-submission-2026` was created and pushed at that commit.
 - Arc work uses branch `arc-microgrants`; X-Agent deployment must not be redeployed.
-- Prefer a separate Arc Vercel project and separate Neon DB for isolation, but do not create/deploy them until the approved deployment step.
+- Prefer a separate Arc Vercel project and separate Neon DB for isolation. User approved external infrastructure/deployment actions; separate Vercel project `settle-arc` is now created, while the isolated Neon database still needs to be connected/provisioned.
 - Existing Alchemy Base provider remains intact except minimal shared-interface changes required for routing.
 - No new dependencies unless explicitly approved.
 - Tasks 3–7 were implemented and verified as one coherent vertical slice because accepting Arc at the API before persistence/provider/finality support existed would create an unsafe intermediate state.
@@ -73,6 +73,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 9/12 milestone.
+- Current phase: Task 10/12 separate production setup.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 8 complete. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. UI now selects Base/Arc, locks Arc finality to 1, validates chain precision, and renders chain-aware explorer/finality details. Forward migration remains unapplied until isolated Arc infrastructure is approved.
+- Status: ON TRACK — Task 9 milestone approved by the user. Full Vitest: 541 passed, 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent. Full ESLint, TypeScript typecheck, and production `next build` are green. Task 10 started: `arc-microgrants` is pushed, separate Vercel project `settle-arc` exists on Node 24 with public Arc RPC configured, and the frozen X-Agent `/health` still reports review commit `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Remaining setup blocker is isolated Neon provisioning plus the Base Alchemy secret for the new Vercel project; no secrets are copied into chat or the repo.
