@@ -1,388 +1,255 @@
 # Settle
 
-> Payment truth for autonomous agents.
+<p align="center">
+  <img src="./public/settle-logo.svg" alt="Settle" width="320" />
+</p>
 
-Settle is an API-first, read-only payment reconciliation service. A caller
-declares an expected USDC payment on Base, the payment happens independently,
-and Settle later checks the chain and returns a deterministic payment status
-plus transaction evidence.
+<p align="center"><strong>Payment truth for autonomous agents.</strong></p>
 
-- Product scope: [`SETTLE_PRODUCT_BRIEF.md`](./SETTLE_PRODUCT_BRIEF.md)
-- Technical source of truth: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+Settle is an API-first, read-only USDC reconciliation layer for autonomous agents. An agent declares the payment it expects, the payer sends USDC directly onchain, and Settle independently verifies canonical chain evidence before returning a deterministic status the agent can act on.
 
-## Status
+Settle currently supports **Base** and **Arc mainnet**. It never holds private keys, never takes custody, and never signs or broadcasts payments.
 
-Milestone 4 — the complete v1 reconciliation state model plus the demo
-inspector UI. Intents with or without a declared `payer` reconcile against
-canonical native Base USDC `Transfer` logs into `pending`, `detected`,
-`partial`, `paid`, `overpaid`, `expired` or `ambiguous`, with expiry-block
-resolution, canonical (reorg-aware) evidence and paginated evidence. Still to
-come (see `ARCHITECTURE.md` §17): abuse/failure hardening (Milestone 5) and
-submission hardening (Milestone 6).
+**Live Arc demo:** https://settle-arc.vercel.app  
+**Arc Microgrants branch:** `arc-microgrants`  
+**Real Arc proof transaction:** https://explorer.arc.io/tx/0x588d0c9423a459f040cbe7af96c7c2d70e26a13fc14933f48d7dc234d6703ae7
+
+## Why Settle
+
+Agents can create invoices and trigger workflows, but a blockchain transaction still leaves a hard question: **did the expected payment actually happen, with the right amount, sender, recipient, timing and finality?**
+
+A transaction hash alone is not enough. Agents need a stable machine-readable answer backed by evidence.
+
+Settle turns an expected payment into a deterministic state machine:
+
+`pending → detected → partial → paid / overpaid / expired / ambiguous`
+
+The API returns exact decimal amounts plus the canonical transaction evidence used to reach that state.
+
+## How it works
+
+1. **Declare** — create an intent with chain, amount, recipient, optional payer, expiry and finality requirements.
+2. **Pay** — USDC moves directly from payer to recipient outside Settle.
+3. **Reconcile** — Settle scans canonical onchain evidence for that intent's payment window.
+4. **Verify** — the caller receives a deterministic status, exact amounts and evidence.
+
+The web interface is a demo console. **The API is the product.**
+
+## Why Arc
+
+Arc is a strong fit for agentic payments because USDC is native to the network and transaction fees are paid in USDC. Settle models Arc's payment semantics directly instead of pretending every EVM rail behaves like Base.
+
+| Rail | USDC accounting | Finality model | Provider path |
+| --- | --- | --- | --- |
+| Base | native Circle USDC, 6 decimals | configurable confirmation depth, default 3 | Alchemy Transfers discovery + canonical receipt verification |
+| Arc mainnet | native/system USDC, 18-decimal system units | deterministic finality on inclusion, represented as 1 confirmation | Arc JSON-RPC + native system Transfer emitter |
+
+For Arc, Settle monitors the native/system emitter `0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE` and stores exact 18-decimal system units. The compatibility USDC interface `0x3600000000000000000000000000000000000000` is retained as asset metadata. The provider chunks `eth_getLogs` scans into windows of at most 9,999 blocks and fails closed if any chunk fails.
+
+## Real Arc mainnet proof
+
+A real user-approved Arc mainnet payment was reconciled end-to-end in production.
+
+| Field | Proof |
+| --- | --- |
+| Intent | `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` |
+| Chain | Arc mainnet (`5042`) |
+| Expected | `0.10 USDC` |
+| Received | `0.10 USDC` |
+| Result | `paid` |
+| Match | `exact_payer` |
+| Required confirmations | `1` |
+| Block | `26004010` |
+| Transaction | `0x588d0c9423a459f040cbe7af96c7c2d70e26a13fc14933f48d7dc234d6703ae7` |
+
+Independent Arc RPC verification confirmed the transaction succeeded, transferred exactly `0.10` native USDC from the declared payer to recipient, emitted the native system Transfer event at log index `0`, and changed the recipient balance from `0` to `0.10` at inclusion.
 
 ## Demo console
 
-The interface is a demo console; the API is the product. Two pages, both
-driven entirely by the public REST API below (no privileged path):
+The deployed UI uses the same public REST API an agent would use.
 
-- `/` — create an expected payment (network and asset are fixed to Base /
-  native USDC) with a live curl preview of the exact request.
-- `/inspect/<id>` — the inspector: payment status with a one-line meaning,
-  expected / received / remaining, obligation metadata, the onchain evidence
-  ledger (`matched`, `candidate`, `orphaned` rows with Basescan links), a
-  “Reconcile now” action, copyable curl calls, and automatic reconciliation
-  every 7 seconds while the page is open (it stops on `paid`, `overpaid`,
-  `expired`, `ambiguous`, while the tab is hidden, and after three consecutive
-  failures until you reconcile manually). Amounts shown are the API's values;
-  nothing monetary is computed in the browser.
+- `/` — explain the reconciliation loop and create a Base or Arc payment intent.
+- `/inspect/<id>` — inspect status, expected/received/remaining amounts, obligation metadata, canonical evidence, explorer links and copyable agent API calls.
+- Automatic reconciliation runs every 7 seconds while an open intent is visible, and stops on terminal states or repeated failures.
+
+For the fastest judge demo, open the production proof directly:
+
+`https://settle-arc.vercel.app/inspect/pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV`
+
+## Public API
+
+### Create an intent
+
+`POST /v1/payment-intents`
+
+Required fields are chain, asset, amount, recipient and expiry. A payer is optional but strongly recommended because it enables exact-payer matching. Base defaults to 3 confirmations; Arc is final on inclusion and therefore requires 1.
+
+### Read an intent
+
+`GET /v1/payment-intents/:id`
+
+Reads persisted state only. It does not touch the chain.
+
+### Reconcile
+
+`POST /v1/payment-intents/:id/reconcile`
+
+Caller-triggered reconciliation performs a complete canonical scan of the intent's payment window, verifies transfers, updates evidence idempotently and returns the new state.
+
+### Evidence
+
+`GET /v1/payment-intents/:id/evidence`
+
+Returns persisted evidence in canonical `(blockNumber, logIndex, txHash)` order. Evidence is marked `matched`, `candidate` or `orphaned`; only matched canonical evidence counts toward totals.
+
+### Health
+
+`GET /health`
+
+Returns service status, environment, exact deployed Git commit and timestamp.
+
+## Status semantics
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | no matching payment evidence observed |
+| `detected` | matching evidence exists but is not yet final under the selected rail's rules |
+| `partial` | confirmed amount is greater than zero but below expected |
+| `paid` | confirmed amount equals expected |
+| `overpaid` | confirmed amount exceeds expected |
+| `expired` | payment window is conclusively closed while confirmed amount is short |
+| `ambiguous` | no payer was declared and more than one plausible sender exists; nothing is counted |
+
+When a payer is declared, matching is exact. Without a payer, Settle only counts a single unambiguous sender.
+
+## Exact money model
+
+Money never uses JavaScript floating point.
+
+`API decimal string ⇄ bigint chain units ⇄ PostgreSQL numeric(78,0)`
+
+- Base: up to 6 USDC decimals.
+- Arc: up to 18 decimals for native/system accounting.
+- Public responses remain human-readable decimal strings.
+
+## Architecture
+
+```text
+HTTP routes
+    ↓
+services
+    ↓
+domain + ports
+    ↑
+repositories / chain providers
+```
+
+Key properties:
+
+- caller-triggered reconciliation; no cron or background workers;
+- persisted `intent.chain` chooses the reconciliation provider;
+- provider work happens before the database transaction;
+- database reconciliation is atomic and row-locked;
+- a provider failure never becomes "no payment" and never orphans evidence;
+- every reconciliation recomputes canonical evidence instead of incrementing balances;
+- evidence is keyed idempotently by `(intent, txHash, logIndex)`;
+- expiry resolves to a chain block boundary, not a local wall-clock guess.
+
+Technical source of truth: [`ARCHITECTURE.md`](./ARCHITECTURE.md)  
+Product brief: [`SETTLE_PRODUCT_BRIEF.md`](./SETTLE_PRODUCT_BRIEF.md)
 
 ## Stack
 
-Node.js 24 · TypeScript 6 (strict) · Next.js 16 App Router (Node runtime, never
-Edge) · React 19 · Tailwind CSS 4 · Zod 4 · Drizzle ORM 0.44 + `pg` · viem 2 ·
-Neon PostgreSQL · Alchemy Base RPC · Vitest 4 · pnpm 10 · Vercel.
+- Next.js 16 App Router + React 19 + TypeScript 6
+- Tailwind CSS 4
+- Neon PostgreSQL + Drizzle ORM
+- viem 2
+- Zod 4
+- Alchemy for Base
+- Arc public JSON-RPC for Arc mainnet
+- Vitest + Playwright
+- Vercel, Node.js 24
 
 ## Local setup
 
-```sh
-# Node 24 (see .node-version) and pnpm 10 (pinned in package.json "packageManager";
-# any recent pnpm switches to the pinned version automatically).
+Requires Node.js 24 and pnpm 10.
+
+```bash
 pnpm install
-cp .env.example .env.local   # fill in DATABASE_URL, DATABASE_URL_UNPOOLED, ALCHEMY_BASE_RPC_URL
-pnpm db:migrate              # applies drizzle/*.sql through DATABASE_URL_UNPOOLED
-pnpm dev                     # http://localhost:3000
+cp .env.example .env.local
+pnpm db:migrate
+pnpm dev
 ```
 
-Migrations are applied only by `pnpm db:migrate` (locally or from CI) — never
-by `next build`, application startup, or a request handler.
+Required server-side configuration:
 
-## Scripts
+```text
+DATABASE_URL=...
+DATABASE_URL_UNPOOLED=...
+ALCHEMY_BASE_RPC_URL=...
+ARC_MAINNET_RPC_URL=https://rpc.mainnet.arc.io
+```
 
-| Script           | What it does                                   |
-| ---------------- | ---------------------------------------------- |
-| `pnpm dev`       | Next.js dev server                             |
-| `pnpm build`     | Production build                               |
-| `pnpm start`     | Serve the production build                     |
-| `pnpm lint`      | ESLint (`eslint-config-next` + TypeScript)     |
-| `pnpm typecheck` | Generate Next route types, then `tsc --noEmit` |
-| `pnpm test`      | Vitest, single run                             |
-| `pnpm test:watch`| Vitest in watch mode                           |
-| `pnpm db:generate` | Generate a SQL migration from `src/db/schema.ts` into `drizzle/` |
-| `pnpm db:migrate`  | Apply committed migrations using `DATABASE_URL_UNPOOLED` |
+Migrations are explicit. They are never run from `next build`, application startup or request handlers.
 
-| `pnpm test:e2e`  | Playwright browser smoke suite (builds and serves the app itself; needs `pnpm exec playwright install chromium` once) |
+## Verification
 
-Required CI checks: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
-The browser suite (`pnpm test:e2e`) intercepts every API call with fixtures,
-so it needs no database or RPC credential; it runs at 1440×900 and 390×844.
+Primary checks:
 
-Database integration tests (`tests/integration`) are skipped unless
-`TEST_DATABASE_URL` points at a dedicated test database:
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
-```sh
+Current Arc submission baseline:
+
+- **541 tests passed**
+- **27 database integration tests skipped locally** because `TEST_DATABASE_URL` is intentionally absent
+- ESLint: passing
+- TypeScript: passing
+- production build: passing
+- desktop and 390px mobile UI reviewed
+- real Arc mainnet payment proof: passing
+
+Database integration tests can be enabled with a dedicated database:
+
+```bash
 TEST_DATABASE_URL=postgres://... pnpm test tests/integration
 ```
 
-## Public endpoints
+## Security / trust boundaries
 
-### `POST /v1/payment-intents`
+Settle is intentionally read-only.
 
-Declares an expected native-USDC payment on Base. The intent's matching window
-starts at the Base block after the latest block observed at creation.
+- no private keys;
+- no wallet custody;
+- no transaction signing or broadcasting;
+- no escrow or refunds;
+- opaque 192-bit capability IDs for intents;
+- strict request validation and 16 KiB JSON body limit;
+- exact chain/provider errors fail closed;
+- secrets are server-only and redacted from logs;
+- CSP, no-store caching and restrictive security headers;
+- no endpoint lists all payment intents.
 
-```sh
-curl -i https://<deployment>/v1/payment-intents \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "externalReference": "INV-204",
-    "chain": "base",
-    "asset": "USDC",
-    "amount": "850.00",
-    "recipient": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "payer": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-    "expiresAt": "2026-09-18T18:00:00Z",
-    "requiredConfirmations": 3
-  }'
-```
+The payment happens outside Settle. Settle only records the obligation and verifies what the chain proves happened.
 
-`201 Created`:
+## Deployment isolation
 
-```json
-{
-  "id": "pi_9VF1Q6h9F0c3bqzXlmqz0xQQ0ivN3G9r1O5T7Y8b",
-  "status": "pending",
-  "externalReference": "INV-204",
-  "chain": "base",
-  "asset": "USDC",
-  "expectedAmount": "850.00",
-  "receivedAmount": "0.00",
-  "remainingAmount": "850.00",
-  "recipient": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  "payer": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-  "requiredConfirmations": 3,
-  "matchConfidence": "none",
-  "paidAt": null,
-  "createdAt": "2026-09-17T14:31:02.000Z",
-  "expiresAt": "2026-09-18T18:00:00.000Z"
-}
-```
+The Arc Microgrants version is deployed separately at `settle-arc.vercel.app` with its own Vercel project and isolated Neon database.
 
-Rules: `chain` must be `"base"` (`UNSUPPORTED_CHAIN`), `asset` must be
-`"USDC"` (`UNSUPPORTED_ASSET`), addresses must be valid EVM addresses
-(`INVALID_ADDRESS`), `amount` is a positive decimal string with at most six
-decimals, `expiresAt` is a UTC timestamp ending in `Z` between now and seven
-days out, `requiredConfirmations` is `1..64` (default `3`), `externalReference`
-is at most 128 characters, unknown fields are rejected, and the JSON body is
-limited to 16 KiB (`VALIDATION_ERROR`). If the chain provider cannot supply the
-latest block the response is `503 UPSTREAM_UNAVAILABLE` (retryable) and no
-intent is created.
+The earlier X-Agent submission remains frozen at review commit:
 
-### `GET /v1/payment-intents/:id`
+`25e958fcecaeb4ad20760c5a94c93a4670fd2b77`
 
-Returns the persisted state in the same shape (`200`), `404 INTENT_NOT_FOUND`
-for an unknown ID, or `400 VALIDATION_ERROR` for a malformed one. No chain
-access happens on read; reconciliation is a separate, caller-triggered step
-(later milestone).
+Arc work lives on `arc-microgrants`; the original X-Agent production deployment is not redeployed by this branch.
 
-### `POST /v1/payment-intents/:id/reconcile`
+## Submission assets
 
-Caller-triggered reconciliation. Settle reads the latest Base block, discovers
-native USDC transfers to `recipient` (from `payer` when declared) in
-`[startBlock, latestBlock]` through the Alchemy Transfers API, verifies each
-one from its canonical transaction receipt (decoded `Transfer` logs — never
-the API's summary values), computes confirmation depth (`latest − block + 1`),
-persists the evidence idempotently and returns the updated intent:
-
-```sh
-curl -i -X POST https://<deployment>/v1/payment-intents/pi_.../reconcile
-```
-
-```json
-{
-  "id": "pi_...",
-  "status": "paid",
-  "externalReference": "INV-204",
-  "chain": "base",
-  "asset": "USDC",
-  "expectedAmount": "25.00",
-  "receivedAmount": "25.00",
-  "remainingAmount": "0.00",
-  "recipient": "0x...",
-  "payer": "0x...",
-  "requiredConfirmations": 3,
-  "matchConfidence": "exact_payer",
-  "paidAt": "2026-09-17T22:43:17.000Z",
-  "createdAt": "...",
-  "expiresAt": "..."
-}
-```
-
-Statuses, in precedence order (`ARCHITECTURE.md` §7.4):
-
-| Status | Condition |
-| --- | --- |
-| `ambiguous` | no declared payer and transfers from two or more senders; nothing is counted |
-| `overpaid` | confirmed total > expected |
-| `paid` | confirmed total = expected |
-| `partial` | 0 < confirmed total < expected, and not conclusively expired |
-| `detected` | evidence exists but none is confirmed yet, and not conclusively expired |
-| `expired` | expiry boundary passed, confirmed total short, and even the not-yet-confirmed in-window evidence could not satisfy it |
-| `pending` | nothing observed |
-
-Confirmed means `latestBlock − blockNumber + 1 ≥ requiredConfirmations`.
-`receivedAmount` sums confirmed matched transfers; `detectedAmount` sums all
-matched transfers. `paidAt` is the block timestamp of the transfer that first
-brought the confirmed total to the expected amount (also for `overpaid`).
-
-Window: `[startBlock, latestBlock]` until `expiresAt`; afterwards the greatest
-Base block with `timestamp ≤ expiresAt` is found by binary search, persisted
-once, and becomes the end of the window. A transfer mined before expiry may
-still confirm after it. `matchConfidence` is `exact_payer` for a declared
-payer, `single_sender` when every in-window transfer comes from one sender,
-`ambiguous` for several senders, `none` without evidence.
-
-Each reconcile is a complete canonical scan of the window: evidence is keyed by
-`(intent, txHash, logIndex)`, amounts are recomputed (never incremented),
-previously stored evidence inside the window that is no longer observed is
-marked `orphaned` and stops counting, and a stored transfer re-observed in a
-different block takes the newest block details. A failed provider call returns
-`503 UPSTREAM_UNAVAILABLE` and changes nothing — it never orphans evidence.
-
-### `GET /v1/payment-intents/:id/evidence`
-
-Persisted evidence in canonical order `(blockNumber, logIndex, txHash)`,
-keyset-paginated (`limit` 1–100, default 50; opaque `cursor`):
-
-```sh
-curl "https://<deployment>/v1/payment-intents/pi_.../evidence?limit=50"
-```
-
-```json
-{
-  "evidence": [
-    {
-      "transactionHash": "0x7db45d69dbb848f50002285f04946b2004388f6823d6ecd3387276141561b0f5",
-      "logIndex": 4,
-      "blockNumber": "51447828",
-      "from": "0x498581fF718922c3f8e6A244956aF099B2652b2b",
-      "to": "0x03468a6A40940E4C54d8b9D8433F7aBf0481A2Bc",
-      "amount": "20710.876899",
-      "confirmations": 25,
-      "blockTimestamp": "2026-09-17T22:43:23.000Z",
-      "association": "matched"
-    }
-  ],
-  "nextCursor": null
-}
-```
-
-`blockNumber` is a decimal string; `confirmations` are as observed at the last
-accepted reconciliation. `association` is `matched` (counts toward totals),
-`candidate` (seen for an `ambiguous` payer-less intent; never counted) or
-`orphaned` (no longer canonical; never counted).
-
-### `GET /health`
-
-```sh
-curl -i https://<deployment>/health
-```
-
-```json
-{
-  "status": "ok",
-  "service": "settle",
-  "environment": "production",
-  "commit": "<exact 40-character git commit SHA>",
-  "timestamp": "2026-09-17T14:31:02.000Z"
-}
-```
-
-`commit` is the deployed `VERCEL_GIT_COMMIT_SHA`; it is `null` when running
-outside a Vercel deployment. `environment` is `production`, `preview`,
-`development`, or `test`.
-
-### `GET /.well-known/xagent-verification.json`
-
-The X-Agent MCP Hackathon deployment proof:
-
-```sh
-curl -i https://<deployment>/.well-known/xagent-verification.json
-```
-
-```json
-{
-  "schemaVersion": 1,
-  "slug": "modolu-settle",
-  "commit": "<exact 40-character git commit SHA>"
-}
-```
-
-Exactly these three fields. `slug` is Settle's registered hackathon slug; the
-deployment variable `XAGENT_SLUG` must be set to `modolu-settle` and any other
-value is a configuration error. `commit` is the same validated
-`VERCEL_GIT_COMMIT_SHA` (40 lowercase hex characters) that `/health` reports —
-one source for both routes, no fallback. If the slug or commit is missing or
-malformed the route returns `500` with the error envelope below rather than
-fabricated evidence. The shape lives only in `src/lib/xagent-verification.ts`.
-
-### Response conventions
-
-- Every response carries an `X-Request-Id` header. A client may supply its own
-  (8–64 characters of `[A-Za-z0-9_-]`); otherwise one is generated.
-- Errors use one stable envelope:
-
-```json
-{
-  "error": {
-    "code": "INTERNAL_ERROR",
-    "message": "Server configuration is invalid",
-    "retryable": false
-  }
-}
-```
-
-Stable codes and HTTP statuses are listed in `ARCHITECTURE.md` §9 and
-implemented in `src/lib/errors.ts`.
-
-## Configuration
-
-All environment variables are validated once in `src/lib/config.ts`; see
-[`.env.example`](./.env.example) for the full list. Chain ID (8453), the native
-USDC contract (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), decimals (6),
-confirmation defaults/bounds (3, `1..64`), the 7-day expiry limit and the 16 KiB
-body limit are code constants in `src/domain/payment-intent.ts`.
-
-Money is exact everywhere: API decimal strings ⇄ `bigint` token units in the
-domain ⇄ `numeric(78,0)` in PostgreSQL. JavaScript `number` is never used for
-amounts.
-
-## Production security
-
-Settle is a public, read-only API. The controls below are code constants or
-platform configuration — none of them is tunable through request input or an
-environment variable.
-
-- **Capability IDs.** Every intent ID is `pi_` + 192 bits of cryptographic
-  randomness. Possession of the ID is the only access control in v1; there is
-  no endpoint that lists intents (`GET /v1/payment-intents` is 405), malformed
-  IDs are rejected before any database access, and logs carry only an ID prefix.
-- **Bounded input.** JSON bodies are limited to 16 KiB, enforced while the body
-  streams (a missing or false `Content-Length` cannot bypass it); reconcile
-  takes no body at all. Amount ≤ 30 integer digits and 6 decimals, expiry ≤ 7
-  days, `requiredConfirmations` 1–64, `externalReference` ≤ 128 characters,
-  unknown fields rejected, chain/asset fixed to Base / native USDC.
-- **Failure safety.** A provider timeout, HTTP/JSON-RPC failure, malformed
-  response, block-lookup failure or database error never changes payment
-  state or evidence: provider calls happen before the database transaction,
-  the transaction is all-or-nothing under a row lock, and a failed scan is
-  never read as canonical absence. Upstream failures return
-  `UPSTREAM_UNAVAILABLE` / `UPSTREAM_INVALID_RESPONSE`, never "no payment".
-- **Secrets.** `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and
-  `ALCHEMY_BASE_RPC_URL` are server-only (no `NEXT_PUBLIC_*`), the provider
-  adapter never re-throws raw viem errors, and the logger redacts URL
-  credentials, provider key paths, `*_URL=`-style assignments and database
-  query parameters from every line. Settle holds no private keys and never
-  signs or sends a transaction.
-- **Headers.** Every response carries `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a restrictive
-  `Permissions-Policy`; `X-Powered-By` is removed. HTML pages get a
-  per-request nonce Content Security Policy (`src/proxy.ts`):
-  `default-src 'self'; script-src 'self' 'nonce-…' 'strict-dynamic';
-  style-src 'self' 'nonce-…'; img-src 'self' data:; font-src 'self';
-  connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';
-  frame-ancestors 'none'` (development adds `'unsafe-eval'` only).
-- **CORS.** None. The demo UI is same-origin and agents call the API
-  server-to-server, which needs no CORS. No `Access-Control-Allow-Origin`
-  header is ever sent.
-- **Caching.** All API, health and verification responses are
-  `Cache-Control: no-store`; pages are rendered per request.
-- **Runtime.** Node.js 24 (`engines.node`), Next.js Node runtime only.
-
-### Vercel Firewall rate limits (required before production submission)
-
-Rate limiting is applied by the Vercel Firewall, not by application code, and
-it cannot be expressed in `vercel.json` (which only supports `deny` and
-`challenge` mitigations). Create these three **Custom Rules** in the project
-dashboard (Firewall → Configure → New Rule), in this order, each keyed by
-**IP address** over a **60-second** window with the follow-up action
-**Deny (429)**:
-
-| Rule | Condition | Limit |
-| --- | --- | --- |
-| Create intents | Request path starts with `/v1/payment-intents` **and** method is `POST` **and** path does not contain `/reconcile` | 10 requests / minute / IP |
-| Reconcile | Request path matches `/v1/payment-intents/*/reconcile` **and** method is `POST` | 30 requests / minute / IP |
-| All API traffic | Request path starts with `/v1/` | 60 requests / minute / IP |
-
-Stage each rule with the *Log* action first, then switch to *Deny*. The
-application still enforces its semantic bounds (body size, expiry,
-confirmations) even if the firewall is misconfigured.
-
-## Deployment (Vercel)
-
-One Vercel project, framework preset Next.js, Node.js 24 (selected from
-`package.json` `engines.node`). Set `DATABASE_URL`, `DATABASE_URL_UNPOOLED`,
-`ALCHEMY_BASE_RPC_URL` and `XAGENT_SLUG` per environment (previews must never
-point at the production database); `VERCEL_ENV` and `VERCEL_GIT_COMMIT_SHA`
-are provided by the platform. For schema-changing commits run `pnpm db:migrate`
-against the target database before promoting the deployment. After each deploy verify `/health` reports the reviewed commit and
-`/.well-known/xagent-verification.json` returns `200` with the same commit.
+- Square logo: `public/settle-logo-1024.png`
+- Vector mark: `public/settle-mark.svg`
+- Horizontal lockup: `public/settle-logo.svg`
+- Form-ready Arc submission copy: [`SUBMISSION_ARC.md`](./SUBMISSION_ARC.md)
+- Demo script/checklist: [`DEMO_ARC.md`](./DEMO_ARC.md)

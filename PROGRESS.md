@@ -36,7 +36,7 @@
 9. **MILESTONE: local Base + Arc demo / full checks** — DONE
 10. **Separate production setup** — DONE
 11. **MILESTONE: real Arc payment proof** — DONE
-12. **Submission polish / final regression / demo** — TODO
+12. **Submission polish / final regression / demo** — IN PROGRESS
 
 ## Decisions made
 - Use Codex CLI as the implementation agent; Claude Code headless mode hung twice at kickoff, so we switched once to protect the deadline. Tech lead drives Codex headlessly, reviews actual diffs, verifies, and commits.
@@ -50,7 +50,7 @@
 - Arc payment intents persist `chain=arc`, the `0x3600…` compatibility interface as metadata, and exact 18-decimal native/system units. Reconciliation routes strictly from persisted `intent.chain`.
 - Arc provider monitors only the native/system emitter, chunks `getLogs` into ≤9,999-block windows, and fails the full scan on any chunk/error; it never combines the duplicate ERC-20 event stream.
 - Arc deterministic finality is represented as one final confirmation on inclusion; Base confirmation-depth behavior remains unchanged.
-- User controls two wallets for the eventual real Arc proof but currently has no Arc-mainnet USDC.
+- Real Arc proof used two user-controlled wallets and completed successfully; no further real-money transactions are needed for submission.
 
 ## Funding-path risk
 - No Arc-mainnet USDC is currently available in the user's wallets.
@@ -62,6 +62,7 @@
 - Real Arc proof completed after explicit user approval. Tx `0x588d0c9423a459f040cbe7af96c7c2d70e26a13fc14933f48d7dc234d6703ae7` succeeded on Arc mainnet block `26004010`. Settle reconciled intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` to `paid`, exact payer, `0.10` received, `0.00` remaining, and one matched evidence row. Independent Arc RPC verification shows chain id `5042`, transaction value exactly `0.10` native USDC, receipt status success, native system emitter Transfer log index `0` for exactly `0.10` from payer to recipient, and recipient balance changed from `0` to `0.10` at the inclusion block.
 
 - UI polish pass completed for Task 12: new Settle brand mark/wordmark assets, responsive hero and proof panel, stronger form/API presentation, polished shared chrome, and inspector header card. No dependencies added. Reviewed at 1440px and 390px widths. ESLint/typecheck/build are green; Vitest remains 541 passed with 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent.
+- Submission docs completed: README rewritten for Base + Arc, `SUBMISSION_ARC.md` contains form-ready project copy, and `DEMO_ARC.md` contains a 60–90 second mainnet-proof demo flow. Package description now reflects Base + Arc. Final production regression and submission-form fill remain.
 
 ## Later
 - API keys/accounts/teams.
@@ -81,4 +82,4 @@
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
 - Current phase: Task 12/12 submission polish / final regression / demo.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Task 10 is complete. `settle-arc.vercel.app` is live on commit `4a40c887b45e0869e86acca76bb76ebaa6044319`; isolated Neon migration is applied. Production smoke created and reconciled an unpaid Base intent (`pi_Ts8bXwqqYBbRCk3c5I1OU-NlvRWkSF4y`) and an unpaid Arc intent (`pi_FrZisk-h4gLBoGT5SJqp3Jfvq36JN7yL`); both remained `pending`, and Arc evidence was empty as expected. The frozen X-Agent `/health` still reports `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Task 11 is now preparing the minimal real Arc-mainnet proof and must stop before any signature/broadcast.
+- Status: ON TRACK — Tasks 1–11 are complete. Task 12 UI polish is deployed and verified; README, form-ready submission copy, and 60–90 second demo script are complete. Remaining work is final production regression, final deployment/X-Agent isolation check, and filling the actual Arc submission form once its fields are open.
