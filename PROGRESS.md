@@ -35,7 +35,7 @@
 8. **Minimal UI** — DONE
 9. **MILESTONE: local Base + Arc demo / full checks** — DONE
 10. **Separate production setup** — DONE
-11. **MILESTONE: real Arc payment proof** — IN PROGRESS (preparing funding/balance/transaction facts; hard stop before signature/broadcast)
+11. **MILESTONE: real Arc payment proof** — DONE
 12. **Submission polish / final regression / demo** — TODO
 
 ## Decisions made
@@ -59,6 +59,7 @@
 - Live balance check for the two proof wallets: both are `0` native USDC on Arc. The prior Base payer holds only `0.000200` USDC on Base, so its current balance is not enough to fund Arc via CCTP. Direct Arc Portal/Transak onramp is the simplest current funding path if available to the user; otherwise acquire more USDC on a supported source chain and bridge.
 - Current Arc RPC gas quote implies roughly `0.00042 USDC` for a plain 21,000-gas native transfer at the observed gas price; treat this as a moving estimate, not a guarantee.
 - Funding re-check: payer `0x389b48BE...df57` now holds `0.474905` native USDC on Arc; recipient is `0`. Fresh production proof intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` expects exactly `0.10 USDC`, expires `2026-10-15T01:57:33Z`, and remains pending. Estimated plain-transfer gas is 21,000 at the observed gas price, about `0.000420000024213 USDC`; balance is sufficient. Hard stop remains in force before signature/broadcast.
+- Real Arc proof completed after explicit user approval. Tx `0x588d0c9423a459f040cbe7af96c7c2d70e26a13fc14933f48d7dc234d6703ae7` succeeded on Arc mainnet block `26004010`. Settle reconciled intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` to `paid`, exact payer, `0.10` received, `0.00` remaining, and one matched evidence row. Independent Arc RPC verification shows chain id `5042`, transaction value exactly `0.10` native USDC, receipt status success, native system emitter Transfer log index `0` for exactly `0.10` from payer to recipient, and recipient balance changed from `0` to `0.10` at the inclusion block.
 
 ## Later
 - API keys/accounts/teams.
@@ -76,6 +77,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 10/12 separate production setup.
+- Current phase: Task 12/12 submission polish / final regression / demo.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
 - Status: ON TRACK — Task 10 is complete. `settle-arc.vercel.app` is live on commit `4a40c887b45e0869e86acca76bb76ebaa6044319`; isolated Neon migration is applied. Production smoke created and reconciled an unpaid Base intent (`pi_Ts8bXwqqYBbRCk3c5I1OU-NlvRWkSF4y`) and an unpaid Arc intent (`pi_FrZisk-h4gLBoGT5SJqp3Jfvq36JN7yL`); both remained `pending`, and Arc evidence was empty as expected. The frozen X-Agent `/health` still reports `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`. Task 11 is now preparing the minimal real Arc-mainnet proof and must stop before any signature/broadcast.
