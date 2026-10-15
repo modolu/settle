@@ -36,7 +36,7 @@
 9. **MILESTONE: local Base + Arc demo / full checks** — DONE
 10. **Separate production setup** — DONE
 11. **MILESTONE: real Arc payment proof** — DONE
-12. **Submission polish / final regression / demo** — IN PROGRESS
+12. **Submission polish / final regression / demo** — DONE
 
 ## Decisions made
 - Use Codex CLI as the implementation agent; Claude Code headless mode hung twice at kickoff, so we switched once to protect the deadline. Tech lead drives Codex headlessly, reviews actual diffs, verifies, and commits.
@@ -63,6 +63,7 @@
 
 - UI polish pass completed for Task 12: new Settle brand mark/wordmark assets, responsive hero and proof panel, stronger form/API presentation, polished shared chrome, and inspector header card. No dependencies added. Reviewed at 1440px and 390px widths. ESLint/typecheck/build are green; Vitest remains 541 passed with 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent.
 - Submission docs completed: README rewritten for Base + Arc, `SUBMISSION_ARC.md` contains form-ready project copy, and `DEMO_ARC.md` contains a 60–90 second mainnet-proof demo flow. Package description now reflects Base + Arc. Final production regression and submission-form fill remain.
+- Final production regression passed on deployment `eb5119d79f30dc062c5e9b788ccbcecd072de1aa`: homepage and logo return 200; fresh Base smoke `pi_v6CpLoM0HS0LxUYUFLfVUCyVeD0_3FoB` remained pending with 0 evidence; fresh Arc smoke `pi_P2PMEe9PKUBEUSkEnlsx3JjGJvDW1B-g` remained pending with 0 evidence; the real Arc proof remains paid with exactly one matched evidence row; original X-Agent production still reports frozen commit `25e958fcecaeb4ad20760c5a94c93a4670fd2b77`.
 
 ## Later
 - API keys/accounts/teams.
@@ -80,6 +81,6 @@
 
 ## Time check
 - Build window started around 2026-10-14 22:00 WAT after scope approval.
-- Current phase: Task 12/12 submission polish / final regression / demo.
+- Current phase: build complete; ready to fill the Arc Microgrants submission form and record/upload the demo video.
 - Target feature freeze: +5 hours; final hour reserved for fixes/deployment/proof/docs/demo.
-- Status: ON TRACK — Tasks 1–11 are complete. Task 12 UI polish is deployed and verified; README, form-ready submission copy, and 60–90 second demo script are complete. Remaining work is final production regression, final deployment/X-Agent isolation check, and filling the actual Arc submission form once its fields are open.
+- Status: COMPLETE — all 12 build tasks are done. Arc production, real mainnet proof, UI/branding, README, submission copy, demo script and final regression are verified. Remaining work is submission operations only: record/upload the demo video and fill/submit the Arc Microgrants form.
