@@ -51,7 +51,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="relative rounded-3xl border border-line-strong bg-ink p-5 text-white shadow-panel sm:p-6">
+          <div className="relative rounded-3xl border border-white/10 bg-[#0f172a] p-5 text-white shadow-panel sm:p-6">
             <div className="flex items-center justify-between gap-4 border-b border-white/10 pb-4">
               <div>
                 <p className="text-[10px] font-semibold tracking-[0.16em] text-white/45 uppercase">Verification result</p>
