@@ -61,6 +61,8 @@
 - Funding re-check: payer `0x389b48BE...df57` now holds `0.474905` native USDC on Arc; recipient is `0`. Fresh production proof intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` expects exactly `0.10 USDC`, expires `2026-10-15T01:57:33Z`, and remains pending. Estimated plain-transfer gas is 21,000 at the observed gas price, about `0.000420000024213 USDC`; balance is sufficient. Hard stop remains in force before signature/broadcast.
 - Real Arc proof completed after explicit user approval. Tx `0x588d0c9423a459f040cbe7af96c7c2d70e26a13fc14933f48d7dc234d6703ae7` succeeded on Arc mainnet block `26004010`. Settle reconciled intent `pi_i0vBa7M1h7j72kwXVrFS5uEt7V0ehmfV` to `paid`, exact payer, `0.10` received, `0.00` remaining, and one matched evidence row. Independent Arc RPC verification shows chain id `5042`, transaction value exactly `0.10` native USDC, receipt status success, native system emitter Transfer log index `0` for exactly `0.10` from payer to recipient, and recipient balance changed from `0` to `0.10` at the inclusion block.
 
+- UI polish pass completed for Task 12: new Settle brand mark/wordmark assets, responsive hero and proof panel, stronger form/API presentation, polished shared chrome, and inspector header card. No dependencies added. Reviewed at 1440px and 390px widths. ESLint/typecheck/build are green; Vitest remains 541 passed with 27 DB integration tests skipped because `TEST_DATABASE_URL` is absent.
+
 ## Later
 - API keys/accounts/teams.
 - Webhooks/SDK/MCP packaging.

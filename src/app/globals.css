@@ -1,82 +1,109 @@
 @import "tailwindcss";
 
-/*
- * Settle design tokens. Neutral "infrastructure" palette with one restrained
- * accent for actions; status colours are always paired with text labels.
- * Light by default; dark follows the OS preference.
- */
 @theme {
-  --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
-  --color-canvas: #f7f7f5;
+  --color-canvas: #f5f7fb;
   --color-surface: #ffffff;
-  --color-surface-muted: #f1f1ee;
-  --color-line: #e4e4df;
-  --color-line-strong: #c9c9c2;
-  --color-ink: #17171a;
-  --color-ink-muted: #5f6066;
-  --color-ink-faint: #8a8b92;
-  --color-accent: #2f5bea;
+  --color-surface-muted: #f7f8fb;
+  --color-line: #e5e8f0;
+  --color-line-strong: #cfd5e2;
+  --color-ink: #121826;
+  --color-ink-muted: #667085;
+  --color-ink-faint: #98a2b3;
+  --color-brand: #5168f4;
+  --color-brand-secondary: #1fbd9f;
+  --color-brand-soft: #eef1ff;
+  --color-accent: #5168f4;
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #e8eefc;
+  --color-accent-soft: #eef1ff;
 
-  --color-status-pending: #6b6c73;
-  --color-status-detected: #2f5bea;
+  --color-status-pending: #667085;
+  --color-status-detected: #5168f4;
   --color-status-partial: #b26a00;
-  --color-status-paid: #137a4a;
+  --color-status-paid: #12805c;
   --color-status-overpaid: #0f766e;
-  --color-status-expired: #9f2f2f;
+  --color-status-expired: #b42318;
   --color-status-ambiguous: #7c3aed;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-canvas: #0f1012;
-    --color-surface: #161719;
-    --color-surface-muted: #1d1e21;
-    --color-line: #2a2b2f;
-    --color-line-strong: #3d3e44;
-    --color-ink: #ededec;
-    --color-ink-muted: #a2a3a9;
-    --color-ink-faint: #6f7076;
-    --color-accent: #7c9cff;
-    --color-accent-ink: #0f1012;
-    --color-accent-soft: #1b2440;
+    --color-canvas: #0b0e17;
+    --color-surface: #111522;
+    --color-surface-muted: #161b29;
+    --color-line: #242b3c;
+    --color-line-strong: #35405a;
+    --color-ink: #f3f5f8;
+    --color-ink-muted: #a8b0c0;
+    --color-ink-faint: #727c90;
+    --color-brand: #8092ff;
+    --color-brand-secondary: #4bd6ba;
+    --color-brand-soft: #171d3b;
+    --color-accent: #8092ff;
+    --color-accent-ink: #0a0d16;
+    --color-accent-soft: #171d3b;
 
-    --color-status-pending: #9a9ba2;
-    --color-status-detected: #8fa8ff;
+    --color-status-pending: #a8b0c0;
+    --color-status-detected: #91a0ff;
     --color-status-partial: #e0a44a;
-    --color-status-paid: #4fc48a;
-    --color-status-overpaid: #4fc4b8;
-    --color-status-expired: #ef7676;
-    --color-status-ambiguous: #b58cff;
+    --color-status-paid: #58d3a6;
+    --color-status-overpaid: #55d4c5;
+    --color-status-expired: #ff8178;
+    --color-status-ambiguous: #b998ff;
   }
 }
 
-html {
-  color-scheme: light dark;
-}
-
+html { color-scheme: light dark; }
 body {
-  background: var(--color-canvas);
+  background:
+    radial-gradient(circle at 14% -5%, color-mix(in srgb, var(--color-brand) 8%, transparent) 0, transparent 30rem),
+    radial-gradient(circle at 90% 8%, color-mix(in srgb, var(--color-brand-secondary) 6%, transparent) 0, transparent 28rem),
+    var(--color-canvas);
   color: var(--color-ink);
 }
 
-/* Visible, consistent focus for every keyboard-operable element. */
+.brand-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-line) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-line) 55%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.hero-glow {
+  position: absolute;
+  width: 28rem;
+  height: 28rem;
+  right: -9rem;
+  top: -12rem;
+  border-radius: 9999px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--color-brand) 20%, transparent), transparent 68%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+.brand-gradient-text {
+  background: linear-gradient(110deg, var(--color-brand), var(--color-brand-secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.brand-mark-shadow { box-shadow: 0 6px 20px rgba(35, 48, 91, 0.18); }
+.shadow-card { box-shadow: 0 18px 60px rgba(31, 41, 72, 0.08); }
+.shadow-card-sm { box-shadow: 0 8px 28px rgba(31, 41, 72, 0.05); }
+.shadow-panel { box-shadow: 0 26px 70px rgba(7, 12, 28, 0.22); }
+
 :where(a, button, input, select, textarea, summary):focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
+:where(button, input, select, textarea) { transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease, opacity 140ms ease; }
+:where(input, select, textarea):hover:not(:disabled) { border-color: var(--color-brand); }
+
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

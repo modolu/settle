@@ -204,7 +204,7 @@ export function PaymentInspector({ id }: { readonly id: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-4 rounded-3xl border border-line bg-surface p-5 shadow-card-sm sm:p-7">
         <div className="min-w-0">
           <p className="text-xs font-medium tracking-[0.18em] text-ink-muted uppercase">Payment intent</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">

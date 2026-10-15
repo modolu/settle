@@ -1,0 +1,18 @@
+<svg width="1280" height="320" viewBox="0 0 1280 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="38" y1="28" x2="266" y2="266" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="68" y1="74" x2="224" y2="226" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6E86FF"/>
+      <stop offset="1" stop-color="#36D5B2"/>
+    </linearGradient>
+  </defs>
+  <rect x="20" y="20" width="280" height="280" rx="68" fill="url(#bg)"/>
+  <path d="M82 102H202C223 102 240 119 240 140C240 161 223 178 202 178H110C89 178 72 195 72 216C72 237 89 254 110 254H230" stroke="url(#stroke)" stroke-width="26" stroke-linecap="round"/>
+  <circle cx="82" cy="102" r="8" fill="#DDE4FF"/>
+  <circle cx="230" cy="254" r="8" fill="#B9F5E7"/>
+  <text x="356" y="187" fill="#121826" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="112" font-weight="700" letter-spacing="15">SETTLE</text>
+  <text x="364" y="242" fill="#667085" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="500" letter-spacing="2">PAYMENT TRUTH FOR AUTONOMOUS AGENTS</text>
+</svg>
